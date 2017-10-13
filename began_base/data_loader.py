@@ -4,14 +4,21 @@ from PIL import Image
 from glob import glob
 import tensorflow as tf
 
-def get_loader(root, batch_size, scale_size, data_format, split=None, is_grayscale=False, seed=None):
+def get_loader(root, batch_size, scale_size, data_format, split_name=None,
+        is_grayscale=False, seed=None, target=None):
     dataset_name = os.path.basename(root)
     if dataset_name == 'mnist':
         is_grayscale=True
+        channels = 1
         #scale_size = 28  # TODO: Determine whether scale should be 28.
+    else:
+        channels = 3
     
-    if dataset_name in ['CelebA', 'mnist'] and split:
-        root = os.path.join(root, 'splits', split)
+    if dataset_name in ['CelebA', 'mnist'] and split_name:
+        if target:
+            root = os.path.join(root, 'splits', split_name, 'target')
+        else:
+            root = os.path.join(root, 'splits', split_name)
 
     for ext in ["jpg", "png"]:
         paths = glob("{}/*.{}".format(root, ext))
@@ -26,15 +33,12 @@ def get_loader(root, batch_size, scale_size, data_format, split=None, is_graysca
 
     with Image.open(paths[0]) as img:
         w, h = img.size
-        if is_grayscale:
-            shape = [h, w, 1]
-        else:
-            shape = [h, w, 3]
+        shape = [h, w, channels]
 
     filename_queue = tf.train.string_input_producer(list(paths), shuffle=False, seed=seed)
     reader = tf.WholeFileReader()
     filename, data = reader.read(filename_queue)
-    image = tf_decode(data, channels=3)
+    image = tf_decode(data, channels=channels)
 
     if is_grayscale:
         image = tf.image.rgb_to_grayscale(image)

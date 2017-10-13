@@ -10,8 +10,10 @@ def GeneratorCNN(z, hidden_num, channels_out, repeat_num, data_format, reuse):
         x = reshape(x, 8, 8, hidden_num, data_format)
         
         for idx in range(repeat_num):
-            x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu, data_format=data_format)
-            x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu, data_format=data_format)
+            x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu,
+                            data_format=data_format)
+            x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu,
+                            data_format=data_format)
             if idx < repeat_num - 1:
                 x = upscale(x, 2, data_format)
 
@@ -20,8 +22,9 @@ def GeneratorCNN(z, hidden_num, channels_out, repeat_num, data_format, reuse):
     variables = tf.contrib.framework.get_variables(vs)
     return out, variables
 
-def DiscriminatorCNN(x, input_channel, z_num, repeat_num, hidden_num, data_format):
-    with tf.variable_scope("D") as vs:
+def DiscriminatorCNN(x, input_channel, z_num, repeat_num, hidden_num,
+        data_format, reuse):
+    with tf.variable_scope("D", reuse=reuse) as vs:
         # Encoder
         x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu, data_format=data_format)
 

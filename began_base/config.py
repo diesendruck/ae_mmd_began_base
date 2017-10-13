@@ -17,22 +17,22 @@ net_arg = add_argument_group('Network')
 net_arg.add_argument('--input_scale_size', type=int, default=64,
                      help='input image will be resized with the given value as width and height')
 net_arg.add_argument('--conv_hidden_num', type=int, default=128,
-                     choices=[64, 128],help='n in the paper')
+                     choices=[4, 8, 16, 32, 64, 128],help='n in the paper')
 net_arg.add_argument('--z_num', type=int, default=64, choices=[64, 128])
 
 # Data
 data_arg = add_argument_group('Data')
-data_arg.add_argument('--dataset', type=str, default='CelebA', choices=['CelebA', 'mnist'])
+data_arg.add_argument('--dataset', type=str, default='mnist', choices=['CelebA', 'mnist'])
 data_arg.add_argument('--split', type=str, default='train')
 data_arg.add_argument('--batch_size', type=int, default=16)
-data_arg.add_argument('--grayscale', type=str2bool, default=False)
+data_arg.add_argument('--grayscale', type=str2bool, default=True)
 data_arg.add_argument('--num_worker', type=int, default=4)
 
 # Training / test parameters
 train_arg = add_argument_group('Training')
 train_arg.add_argument('--is_train', type=str2bool, default=True)
 train_arg.add_argument('--optimizer', type=str, default='adam')
-train_arg.add_argument('--max_step', type=int, default=500000)
+train_arg.add_argument('--max_step', type=int, default=5000)
 train_arg.add_argument('--lr_update_step', type=int, default=100000, choices=[100000, 75000])
 train_arg.add_argument('--d_lr', type=float, default=0.00008)
 train_arg.add_argument('--g_lr', type=float, default=0.00008)
@@ -46,8 +46,8 @@ train_arg.add_argument('--use_gpu', type=str2bool, default=True)
 # Misc
 misc_arg = add_argument_group('Misc')
 misc_arg.add_argument('--load_path', type=str, default='')
-misc_arg.add_argument('--log_step', type=int, default=50)
-misc_arg.add_argument('--save_step', type=int, default=5000)
+misc_arg.add_argument('--log_step', type=int, default=500)
+misc_arg.add_argument('--save_step', type=int, default=1000)
 misc_arg.add_argument('--num_log_samples', type=int, default=3)
 misc_arg.add_argument('--log_level', type=str, default='INFO', choices=['INFO', 'DEBUG', 'WARN'])
 misc_arg.add_argument('--log_dir', type=str, default='logs')

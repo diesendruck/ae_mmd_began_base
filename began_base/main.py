@@ -1,3 +1,4 @@
+import pdb
 import numpy as np
 import tensorflow as tf
 
@@ -28,7 +29,10 @@ def main(config):
     data_loader = get_loader(
             data_path, config.batch_size, config.input_scale_size,
             config.data_format, config.split)
-    trainer = Trainer(config, data_loader)
+    data_loader_target = get_loader(
+            data_path, 1000, config.input_scale_size,
+            config.data_format, config.split, target=True)
+    trainer = Trainer(config, data_loader, data_loader_target)
 
     if config.is_train:
         save_config(config)
