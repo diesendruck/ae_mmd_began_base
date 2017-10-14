@@ -30,7 +30,7 @@ def main(config):
             data_path, config.batch_size, config.input_scale_size,
             config.data_format, config.split)
     data_loader_target = get_loader(
-            data_path, 1000, config.input_scale_size,
+            data_path, config.target_num, config.input_scale_size,
             config.data_format, config.split, target=True)
     trainer = Trainer(config, data_loader, data_loader_target)
 

@@ -84,7 +84,7 @@ class Trainer(object):
         self.gamma = config.gamma
         self.lambda_k = config.lambda_k
 
-        self.z_num = config.z_num
+        self.z_dim = config.z_dim
         self.conv_hidden_num = config.conv_hidden_num
         self.input_scale_size = config.input_scale_size
 
@@ -137,7 +137,8 @@ class Trainer(object):
         print('\n{}\n'.format(self.config))
         test_target = self.get_image_from_loader_target()
 
-        z_fixed = np.random.uniform(-1, 1, size=(self.batch_size, self.z_num))
+        #z_fixed = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
+        z_fixed = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
         x_fixed = self.get_image_from_loader()
         save_image(x_fixed, '{}/x_fixed.png'.format(self.model_dir))
 
@@ -162,15 +163,11 @@ class Trainer(object):
             measure_history.append(measure)
 
             # Save covariance matrix of encoded layer of target class.
-            if step == 1001:
+            if step == 10001:
                 target_enc = self.encode(test_target)
-                pdb.set_trace()
                 target_cov = np.cov(target_enc, rowvar=False)
-                pdb.set_trace()
                 np.save('target_covariance_matrix.npy', target_cov)
-                pdb.set_trace()
                 scipy.misc.imsave('target_covariance_matrix.jpg', target_cov) 
-                pdb.set_trace()
 
 
             if step % self.log_step == 0:
@@ -181,7 +178,8 @@ class Trainer(object):
                 d_loss = result['d_loss']
                 k_t = result['k_t']
 
-                print("[{}/{}] Loss_D: {:.6f} Loss_G: {:.6f} measure: {:.4f}, k_t: {:.4f}". \
+                print(("[{}/{}] Loss_D: {:.6f} Loss_G: {:.6f} measure: {:.4f}, "
+                       "k_t: {:.4f}"). \
                       format(step, self.max_step, d_loss, g_loss, measure, k_t))
 
             if step % (self.save_step) == 0:
@@ -199,17 +197,15 @@ class Trainer(object):
         self.x = self.data_loader
         x = norm_img(self.x)
 
-        self.z = tf.random_uniform(
-                (tf.shape(x)[0], self.z_num), minval=-1.0, maxval=1.0)
+        self.z = tf.random_normal([tf.shape(x)[0], self.z_dim])
         self.k_t = tf.Variable(0., trainable=False, name='k_t')
 
         G, self.G_var = GeneratorCNN(
                 self.z, self.conv_hidden_num, self.channel,
                 self.repeat_num, self.data_format, reuse=False)
 
-        # TEST/TODO: set different conv hidden num for AE.
         d_out, d_enc, self.D_var = DiscriminatorCNN(
-                tf.concat([G, x], 0), self.channel, self.z_num, self.repeat_num,
+                tf.concat([G, x], 0), self.channel, self.z_dim, self.repeat_num,
                 self.conv_hidden_num, self.data_format, reuse=False)
         AE_G, AE_x = tf.split(d_out, 2)
         _, self.x_enc = tf.split(d_enc, 2)
@@ -218,7 +214,7 @@ class Trainer(object):
             [None, self.channel, self.input_scale_size, self.input_scale_size],
             name='test_input')
         _, self.test_enc, _ = DiscriminatorCNN(
-                self.test_input, self.channel, self.z_num, self.repeat_num,
+                self.test_input, self.channel, self.z_dim, self.repeat_num,
                 self.conv_hidden_num, self.data_format, reuse=True)
 
         self.G = denorm_img(G, self.data_format)
@@ -269,7 +265,7 @@ class Trainer(object):
             # Extra ops for interpolation
             z_optimizer = tf.train.AdamOptimizer(0.0001)
 
-            self.z_r = tf.get_variable("z_r", [self.batch_size, self.z_num], tf.float32)
+            self.z_r = tf.get_variable("z_r", [self.batch_size, self.z_dim], tf.float32)
             self.z_r_update = tf.assign(self.z_r, self.z)
 
         G_z_r, _ = GeneratorCNN(
@@ -361,7 +357,7 @@ class Trainer(object):
 
             self.interpolate_G(real1_batch, step, root_path)
 
-            z_fixed = np.random.uniform(-1, 1, size=(self.batch_size, self.z_num))
+            z_fixed = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
             G_z = self.generate(z_fixed, path=os.path.join(root_path, "test{}_G_z.png".format(step)))
 
             if all_G_z is None:
