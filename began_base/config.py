@@ -14,13 +14,14 @@ def add_argument_group(name):
 
 # Network
 net_arg = add_argument_group('Network')
-net_arg.add_argument('--input_scale_size', type=int, default=64,
+net_arg.add_argument('--scale_size', type=int, default=64,
                      help=('input image will be resized with the given value '
                            'as width and height'))
 net_arg.add_argument('--conv_hidden_num', type=int, default=128,
                      choices=[2, 4, 8, 16, 32, 64, 128],
                      help='n in the paper')
-net_arg.add_argument('--z_dim', type=int, default=64, choices=[16, 64, 128])
+net_arg.add_argument('--z_dim', type=int, default=64, choices=[16, 64, 128],
+                     help='Dimension of hidden layer in autoencoder.')
 
 # Data
 data_arg = add_argument_group('Data')
@@ -30,7 +31,7 @@ data_arg.add_argument('--split', type=str, default='train')
 data_arg.add_argument('--batch_size', type=int, default=16)
 data_arg.add_argument('--grayscale', type=str2bool, default=True)
 data_arg.add_argument('--num_worker', type=int, default=4)
-data_arg.add_argument('--target_num', type=int, default=16,
+data_arg.add_argument('--target_num', type=int, default=1000,
                       help=('# of target samples, used to sample target group '
                             'mean and covariance'))
 
@@ -53,8 +54,8 @@ train_arg.add_argument('--use_gpu', type=str2bool, default=True)
 # Misc
 misc_arg = add_argument_group('Misc')
 misc_arg.add_argument('--load_path', type=str, default='')
-misc_arg.add_argument('--log_step', type=int, default=500)
-misc_arg.add_argument('--save_step', type=int, default=1000)
+misc_arg.add_argument('--log_step', type=int, default=100)
+misc_arg.add_argument('--save_step', type=int, default=500)
 misc_arg.add_argument('--num_log_samples', type=int, default=3)
 misc_arg.add_argument('--log_level', type=str, default='INFO',
                       choices=['INFO', 'DEBUG', 'WARN'])

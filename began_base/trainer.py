@@ -86,7 +86,7 @@ class Trainer(object):
 
         self.z_dim = config.z_dim
         self.conv_hidden_num = config.conv_hidden_num
-        self.input_scale_size = config.input_scale_size
+        self.scale_size = config.scale_size
 
         self.model_dir = config.model_dir
         self.load_path = config.load_path
@@ -133,54 +133,153 @@ class Trainer(object):
             self.build_test_model()
 
 
+    def build_model(self):
+        self.x = self.data_loader
+        x = norm_img(self.x)
+        self.z = tf.random_normal([tf.shape(x)[0], self.z_dim])
+        self.t_mean = tf.Variable(tf.zeros([self.z_dim, 1]), trainable=False,
+                                  name='target_mean')
+        self.t_cov_inv = tf.Variable(tf.zeros([self.z_dim, self.z_dim]),
+                                     trainable=False, name='target_cov_inv')
+
+        # Set up generator and autoencoder functions.
+        g, self.g_var = GeneratorCNN(
+            self.z, self.conv_hidden_num, self.channel,
+            self.repeat_num, self.data_format, reuse=False)
+        d_out, d_enc, self.d_var = AutoencoderCNN(
+            tf.concat([x, g], 0), self.channel, self.z_dim, self.repeat_num,
+            self.conv_hidden_num, self.data_format, reuse=False)
+        AE_x, AE_g = tf.split(d_out, 2)
+        self.x_enc, self.g_enc = tf.split(d_enc, 2)
+        self.g = denorm_img(g, self.data_format)
+        self.AE_g = denorm_img(AE_g, self.data_format)
+        self.AE_x = denorm_img(AE_x, self.data_format)
+
+        # Set up autoencoder with test input.
+        self.test_input = tf.placeholder(tf.float32, name='test_input',
+            shape=[None, self.channel, self.scale_size, self.scale_size])
+        _, self.test_enc, _ = AutoencoderCNN(
+            self.test_input, self.channel, self.z_dim, self.repeat_num,
+            self.conv_hidden_num, self.data_format, reuse=True)
+        
+        # Define autoencoder loss and MMD between encodings of data and gen.
+        self.ae_loss = tf.reduce_mean(tf.abs(AE_x - x))
+
+        # DEFINE MMD.
+        #self.mmd = MMD(self.x_enc, self.g_enc, self.t_mean, self.t_cov_inv)
+        if 1:
+            xe = self.x_enc 
+            ge = self.g_enc 
+            t_mean = self.t_mean
+            t_cov_inv = self.t_cov_inv
+            data_num = tf.shape(xe)[0]
+            gen_num = tf.shape(ge)[0]
+            v = tf.concat([xe, ge], 0)
+            VVT = tf.matmul(v, tf.transpose(v))
+            sqs = tf.reshape(tf.diag_part(VVT), [-1, 1])
+            sqs_tiled_horiz = tf.tile(sqs, [1, tf.shape(sqs)[0]])
+            exp_object = sqs_tiled_horiz - 2 * VVT + tf.transpose(sqs_tiled_horiz)
+            sigma = 1.
+            K = tf.exp(-0.5 * (1 / sigma) * exp_object)
+            K_yy = K[data_num:, data_num:]
+            K_xy = K[:data_num, data_num:]
+            K_yy_upper = (tf.matrix_band_part(K_yy, 0, -1) -
+                          tf.matrix_band_part(K_yy, 0, 0))
+            num_combos_yy = tf.to_float(gen_num * (gen_num - 1) / 2)
+            def prob_of_keeping(x):
+                xt_ = x - tf.transpose(t_mean)
+                x_ = tf.transpose(xt_)
+                pr = 1. - 0.5 * tf.exp(-10. * tf.matmul(tf.matmul(xt_, t_cov_inv), x_))
+                return pr
+            keeping_probs = tf.reshape(tf.map_fn(prob_of_keeping, xe), [-1, 1])
+            keeping_probs_tiled = tf.tile(keeping_probs, [1, gen_num])
+            p1_weights_xy = 1. / keeping_probs_tiled
+            p1_weights_xy_normed = p1_weights_xy / tf.reduce_sum(p1_weights_xy)
+            Kw_xy = K[:data_num, data_num:] * p1_weights_xy_normed
+            self.mmd = (tf.reduce_sum(K_yy_upper) / num_combos_yy -
+                        2 * tf.reduce_sum(Kw_xy))
+
+        # Set up optimizer nodes.
+        if self.optimizer == 'adam':
+            optimizer = tf.train.AdamOptimizer
+        else:
+            raise ValueError('[!] Caution! Paper only used Adam')
+        self.ae_optim = optimizer(self.d_lr).minimize(self.ae_loss,
+                                                      var_list=self.d_var) 
+        self.g_optim = optimizer(self.g_lr).minimize(self.mmd,
+                                                     global_step=self.step,
+                                                     var_list=self.g_var)
+
+        self.summary_op = tf.summary.merge([
+            tf.summary.image("g", self.g),
+            tf.summary.image("AE_g", self.AE_g),
+            tf.summary.image("AE_x", self.AE_x),
+            tf.summary.scalar("loss/ae_loss", self.ae_loss),
+            tf.summary.scalar("loss/mmd", self.mmd),
+            tf.summary.scalar("misc/d_lr", self.d_lr),
+            tf.summary.scalar("misc/g_lr", self.g_lr),
+        ])
+
+
     def train(self):
         print('\n{}\n'.format(self.config))
-        test_target = self.get_image_from_loader_target()
 
-        #z_fixed = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
         z_fixed = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
         x_fixed = self.get_image_from_loader()
         save_image(x_fixed, '{}/x_fixed.png'.format(self.model_dir))
 
-        prev_measure = 1
-        measure_history = deque([0]*self.lr_update_step, self.lr_update_step)
+        # Get mean and inverse covariance of target sample encodings.
+        test_target = self.get_image_from_loader_target()
+        try:
+            t_mean = np.load('target_encoding_mean.npy') 
+            t_cov_inv = np.load('target_encoding_cov_inv.npy') 
+        except:
+            print('Fetching target mean and covariance.')
+            for i in trange(0, 1000):
+                self.sess.run(self.ae_optim)
+            target_enc = self.encode(test_target)
+            t_mean = np.reshape(np.mean(target_enc, axis=0), [-1, 1])
+            t_cov = np.cov(target_enc, rowvar=False)
+            t_cov_inv = np.linalg.inv(t_cov)
+            np.save('target_encoding_mean.npy', t_mean)
+            np.save('target_encoding_cov_inv.npy', t_cov_inv)
+            scipy.misc.imsave('target_encoding_cov.jpg', t_cov) 
+            x_fake = self.generate(z_fixed, self.model_dir, idx=0)
+            self.autoencode(x_fixed, self.model_dir, idx=0, x_fake=x_fake)
 
+        # Train generator using pre-trained autoencoder.
         for step in trange(self.start_step, self.max_step):
+            '''
+            self.sess.run(self.g_optim,
+                feed_dict={
+                    self.t_mean: t_mean,
+                    self.t_cov_inv: t_cov_inv})
+            pdb.set_trace()
+            '''
+
             fetch_dict = {
-                "k_update": self.k_update,
-                "measure": self.measure,
+                'g_optim': self.g_optim,
             }
             if step % self.log_step == 0:
                 fetch_dict.update({
-                    "summary": self.summary_op,
-                    "g_loss": self.g_loss,
-                    "d_loss": self.d_loss,
-                    "k_t": self.k_t,
+                    'summary': self.summary_op,
+                    'ae_loss': self.ae_loss,
+                    'mmd': self.mmd,
                 })
-            result = self.sess.run(fetch_dict)
-
-            measure = result['measure']
-            measure_history.append(measure)
-
-            # Save covariance matrix of encoded layer of target class.
-            if step == 10001:
-                target_enc = self.encode(test_target)
-                target_cov = np.cov(target_enc, rowvar=False)
-                np.save('target_covariance_matrix.npy', target_cov)
-                scipy.misc.imsave('target_covariance_matrix.jpg', target_cov) 
-
+            result = self.sess.run(fetch_dict,
+                feed_dict={
+                    self.t_mean: t_mean,
+                    self.t_cov_inv: t_cov_inv})
 
             if step % self.log_step == 0:
                 self.summary_writer.add_summary(result['summary'], step)
                 self.summary_writer.flush()
 
-                g_loss = result['g_loss']
-                d_loss = result['d_loss']
-                k_t = result['k_t']
+                ae_loss = result['ae_loss']
+                mmd = result['mmd']
 
-                print(("[{}/{}] Loss_D: {:.6f} Loss_G: {:.6f} measure: {:.4f}, "
-                       "k_t: {:.4f}"). \
-                      format(step, self.max_step, d_loss, g_loss, measure, k_t))
+                print('[{}/{}] AE_loss: {:.6f} MMD: {:.6f}'.format(
+                    step, self.max_step, ae_loss, mmd))
 
             if step % (self.save_step) == 0:
                 x_fake = self.generate(z_fixed, self.model_dir, idx=step)
@@ -188,76 +287,6 @@ class Trainer(object):
 
             if step % self.lr_update_step == self.lr_update_step - 1:
                 self.sess.run([self.g_lr_update, self.d_lr_update])
-                #cur_measure = np.mean(measure_history)
-                #if cur_measure > prev_measure * 0.99:
-                #prev_measure = cur_measure
-
-
-    def build_model(self):
-        self.x = self.data_loader
-        x = norm_img(self.x)
-
-        self.z = tf.random_normal([tf.shape(x)[0], self.z_dim])
-        self.k_t = tf.Variable(0., trainable=False, name='k_t')
-
-        G, self.G_var = GeneratorCNN(
-                self.z, self.conv_hidden_num, self.channel,
-                self.repeat_num, self.data_format, reuse=False)
-
-        d_out, d_enc, self.D_var = DiscriminatorCNN(
-                tf.concat([G, x], 0), self.channel, self.z_dim, self.repeat_num,
-                self.conv_hidden_num, self.data_format, reuse=False)
-        AE_G, AE_x = tf.split(d_out, 2)
-        _, self.x_enc = tf.split(d_enc, 2)
-        self.test_input = tf.placeholder(
-            tf.float32,
-            [None, self.channel, self.input_scale_size, self.input_scale_size],
-            name='test_input')
-        _, self.test_enc, _ = DiscriminatorCNN(
-                self.test_input, self.channel, self.z_dim, self.repeat_num,
-                self.conv_hidden_num, self.data_format, reuse=True)
-
-        self.G = denorm_img(G, self.data_format)
-        self.AE_G, self.AE_x = denorm_img(AE_G, self.data_format), denorm_img(AE_x, self.data_format)
-
-        if self.optimizer == 'adam':
-            optimizer = tf.train.AdamOptimizer
-        else:
-            raise Exception("[!] Caution! Paper didn't use {} opimizer other than Adam".format(config.optimizer))
-
-        g_optimizer, d_optimizer = optimizer(self.g_lr), optimizer(self.d_lr)
-
-        self.d_loss_real = tf.reduce_mean(tf.abs(AE_x - x))
-        self.d_loss_fake = tf.reduce_mean(tf.abs(AE_G - G))
-
-        self.d_loss = self.d_loss_real - self.k_t * self.d_loss_fake
-        self.g_loss = tf.reduce_mean(tf.abs(AE_G - G))
-
-        d_optim = d_optimizer.minimize(self.d_loss, var_list=self.D_var)
-        g_optim = g_optimizer.minimize(self.g_loss, global_step=self.step, var_list=self.G_var)
-
-        self.balance = self.gamma * self.d_loss_real - self.g_loss
-        self.measure = self.d_loss_real + tf.abs(self.balance)
-
-        with tf.control_dependencies([d_optim, g_optim]):
-            self.k_update = tf.assign(
-                self.k_t, tf.clip_by_value(self.k_t + self.lambda_k * self.balance, 0, 1))
-
-        self.summary_op = tf.summary.merge([
-            tf.summary.image("G", self.G),
-            tf.summary.image("AE_G", self.AE_G),
-            tf.summary.image("AE_x", self.AE_x),
-
-            tf.summary.scalar("loss/d_loss", self.d_loss),
-            tf.summary.scalar("loss/d_loss_real", self.d_loss_real),
-            tf.summary.scalar("loss/d_loss_fake", self.d_loss_fake),
-            tf.summary.scalar("loss/g_loss", self.g_loss),
-            tf.summary.scalar("misc/measure", self.measure),
-            tf.summary.scalar("misc/k_t", self.k_t),
-            tf.summary.scalar("misc/d_lr", self.d_lr),
-            tf.summary.scalar("misc/g_lr", self.g_lr),
-            tf.summary.scalar("misc/balance", self.balance),
-        ])
 
 
     def build_test_model(self):
@@ -268,11 +297,11 @@ class Trainer(object):
             self.z_r = tf.get_variable("z_r", [self.batch_size, self.z_dim], tf.float32)
             self.z_r_update = tf.assign(self.z_r, self.z)
 
-        G_z_r, _ = GeneratorCNN(
+        g_z_r, _ = GeneratorCNN(
                 self.z_r, self.conv_hidden_num, self.channel, self.repeat_num, self.data_format, reuse=True)
 
         with tf.variable_scope("test") as vs:
-            self.z_r_loss = tf.reduce_mean(tf.abs(self.x - G_z_r))
+            self.z_r_loss = tf.reduce_mean(tf.abs(self.x - g_z_r))
             self.z_r_optim = z_optimizer.minimize(self.z_r_loss, var_list=[self.z_r])
 
         test_variables = tf.contrib.framework.get_variables(vs)
@@ -280,7 +309,7 @@ class Trainer(object):
 
 
     def generate(self, inputs, root_path=None, path=None, idx=None, save=True):
-        x = self.sess.run(self.G, {self.z: inputs})
+        x = self.sess.run(self.g, {self.z: inputs})
         if path is None and save:
             path = os.path.join(root_path, '{}_G.png'.format(idx))
             save_image(x, path)
@@ -332,7 +361,7 @@ class Trainer(object):
 
         generated = np.stack(generated).transpose([1, 0, 2, 3, 4])
         for idx, img in enumerate(generated):
-            save_image(img, os.path.join(root_path, 'test{}_interp_G_{}.png'.format(step, idx)), nrow=10)
+            save_image(img, os.path.join(root_path, 'test{}_interp_g_{}.png'.format(step, idx)), nrow=10)
 
         all_img_num = np.prod(generated.shape[:2])
         batch_generated = np.reshape(generated, [all_img_num] + list(generated.shape[2:]))
@@ -342,7 +371,7 @@ class Trainer(object):
     def test(self):
         root_path = "./"#self.model_dir
 
-        all_G_z = None
+        all_g_z = None
         for step in range(3):
             real1_batch = self.get_image_from_loader()
             real2_batch = self.get_image_from_loader()
@@ -358,15 +387,15 @@ class Trainer(object):
             self.interpolate_G(real1_batch, step, root_path)
 
             z_fixed = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
-            G_z = self.generate(z_fixed, path=os.path.join(root_path, "test{}_G_z.png".format(step)))
+            g_z = self.generate(z_fixed, path=os.path.join(root_path, "test{}_g_z.png".format(step)))
 
-            if all_G_z is None:
-                all_G_z = G_z
+            if all_g_z is None:
+                all_g_z = g_z
             else:
-                all_G_z = np.concatenate([all_G_z, G_z])
-            save_image(all_G_z, '{}/G_z{}.png'.format(root_path, step))
+                all_g_z = np.concatenate([all_g_z, g_z])
+            save_image(all_g_z, '{}/g_z{}.png'.format(root_path, step))
 
-        save_image(all_G_z, '{}/all_G_z.png'.format(root_path), nrow=16)
+        save_image(all_g_z, '{}/all_g_z.png'.format(root_path), nrow=16)
 
 
     def get_image_from_loader(self):

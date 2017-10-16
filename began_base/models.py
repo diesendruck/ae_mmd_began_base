@@ -17,25 +17,31 @@ def GeneratorCNN(z, hidden_num, channels_out, repeat_num, data_format, reuse):
             if idx < repeat_num - 1:
                 x = upscale(x, 2, data_format)
 
-        out = slim.conv2d(x, channels_out, 3, 1, activation_fn=None, data_format=data_format)
+        out = slim.conv2d(x, channels_out, 3, 1, activation_fn=None,
+                          data_format=data_format)
 
     variables = tf.contrib.framework.get_variables(vs)
     return out, variables
 
-def DiscriminatorCNN(x, input_channel, z_num, repeat_num, hidden_num,
+def AutoencoderCNN(x, input_channel, z_num, repeat_num, hidden_num,
         data_format, reuse):
     with tf.variable_scope("D", reuse=reuse) as vs:
         # Encoder
-        x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu, data_format=data_format)
+        x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu,
+                        data_format=data_format)
 
         prev_channel_num = hidden_num
         for idx in range(repeat_num):
             channel_num = hidden_num * (idx + 1)
-            x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu, data_format=data_format)
-            x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu, data_format=data_format)
+            x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu,
+                            data_format=data_format)
+            x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu,
+                            data_format=data_format)
             if idx < repeat_num - 1:
-                x = slim.conv2d(x, channel_num, 3, 2, activation_fn=tf.nn.elu, data_format=data_format)
-                #x = tf.contrib.layers.max_pool2d(x, [2, 2], [2, 2], padding='VALID')
+                x = slim.conv2d(x, channel_num, 3, 2, activation_fn=tf.nn.elu,
+                                data_format=data_format)
+                #x = tf.contrib.layers.max_pool2d(x, [2, 2], [2, 2],
+                #                                 padding='VALID')
 
         x = tf.reshape(x, [-1, np.prod([8, 8, channel_num])])
         z = x = slim.fully_connected(x, z_num, activation_fn=None)
@@ -46,15 +52,63 @@ def DiscriminatorCNN(x, input_channel, z_num, repeat_num, hidden_num,
         x = reshape(x, 8, 8, hidden_num, data_format)
         
         for idx in range(repeat_num):
-            x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu, data_format=data_format)
-            x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu, data_format=data_format)
+            x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu,
+                            data_format=data_format)
+            x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu,
+                            data_format=data_format)
             if idx < repeat_num - 1:
                 x = upscale(x, 2, data_format)
 
-        out = slim.conv2d(x, input_channel, 3, 1, activation_fn=None, data_format=data_format)
+        out = slim.conv2d(x, input_channel, 3, 1, activation_fn=None,
+                          data_format=data_format)
 
     variables = tf.contrib.framework.get_variables(vs)
     return out, z, variables
+
+
+def MMD(data, gen, t_mean, t_cov_inv, sigma=1):
+    '''Using encodings of data and generated samples, compute MMD.
+
+    Args:
+      data: Tensor of encoded data samples.
+      gen: Tensor of encoded generated samples.
+      t_mean: Tensor, mean of batch of encoded target samples.
+      t_cov_inv: Tensor, covariance of batch of encoded target samples.
+      sigma: Scalar lengthscale of MMD kernel.
+
+    Returns:
+      mmd: Scalar, metric of discrepancy between the two samples.
+    '''
+    xe = data
+    ge = gen
+    data_num = tf.shape(xe)[0]
+    gen_num = tf.shape(ge)[0]
+    v = tf.concat([xe, ge], 0)
+    VVT = tf.matmul(v, tf.transpose(v))
+    sqs = tf.reshape(tf.diag_part(VVT), [-1, 1])
+    sqs_tiled_horiz = tf.tile(sqs, [1, tf.shape(sqs)[0]])
+    exp_object = sqs_tiled_horiz - 2 * VVT + tf.transpose(sqs_tiled_horiz)
+    K = tf.exp(-0.5 * (1 / sigma) * exp_object)
+    K_yy = K[data_num:, data_num:]
+    K_xy = K[:data_num, data_num:]
+    K_yy_upper = (tf.matrix_band_part(K_yy, 0, -1) - 
+                  tf.matrix_band_part(K_yy, 0, 0))
+    num_combos_yy = tf.to_float(gen_num * (gen_num - 1) / 2)
+
+    def prob_of_keeping(xi):
+        xt_ = xi - tf.transpose(t_mean)
+        x_ = tf.transpose(xt_)
+        pr = 1. - 0.5 * tf.exp(-10. * tf.matmul(tf.matmul(xt_, t_cov_inv), x_))
+        return pr
+
+    keeping_probs = tf.reshape(tf.map_fn(prob_of_keeping, xe), [-1, 1])
+    keeping_probs_tiled = tf.tile(keeping_probs, [1, gen_num])
+    p1_weights_xy = 1. / keeping_probs_tiled
+    p1_weights_xy_normed = p1_weights_xy / tf.reduce_sum(p1_weights_xy)
+    Kw_xy = K[:data_num, data_num:] * p1_weights_xy_normed
+    mmd = (tf.reduce_sum(K_yy_upper) / num_combos_yy -
+           2 * tf.reduce_sum(Kw_xy))
+
 
 def int_shape(tensor):
     shape = tensor.get_shape().as_list()
