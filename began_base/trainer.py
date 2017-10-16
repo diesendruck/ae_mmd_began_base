@@ -132,6 +132,7 @@ class Trainer(object):
         self.x = self.data_loader
         x = norm_img(self.x)
         self.z = tf.random_normal([tf.shape(x)[0], self.z_dim])
+        self.k_t = tf.Variable(0., trainable=False, name='k_t')
         self.t_mean = tf.Variable(tf.zeros([self.z_dim, 1]), trainable=False,
                                   name='target_mean')
         self.t_cov_inv = tf.Variable(tf.zeros([self.z_dim, self.z_dim]),
@@ -156,9 +157,6 @@ class Trainer(object):
         _, self.test_enc, _ = AutoencoderCNN(
             self.test_input, self.channel, self.z_dim, self.repeat_num,
             self.conv_hidden_num, self.data_format, reuse=True)
-        
-        # Define autoencoder loss and MMD between encodings of data and gen.
-        self.ae_loss = tf.reduce_mean(tf.abs(AE_x - x))
 
         # DEFINE MMD.
         xe = self.x_enc 
@@ -182,27 +180,56 @@ class Trainer(object):
         def prob_of_keeping(x):
             xt_ = x - tf.transpose(t_mean)
             x_ = tf.transpose(xt_)
-            pr = 1. - 0.5 * tf.exp(-10. * tf.matmul(tf.matmul(xt_, t_cov_inv), x_))
+            pr = 1. - 0.8 * tf.exp(-.1 * tf.matmul(tf.matmul(xt_, t_cov_inv), x_))
             return pr
         keeping_probs = tf.reshape(tf.map_fn(prob_of_keeping, xe), [-1, 1])
         keeping_probs_tiled = tf.tile(keeping_probs, [1, gen_num])
         p1_weights_xy = 1. / keeping_probs_tiled
         p1_weights_xy_normed = p1_weights_xy / tf.reduce_sum(p1_weights_xy)
-        Kw_xy = K[:data_num, data_num:] * p1_weights_xy_normed
-        #self.mmd = (tf.reduce_sum(K_yy_upper) / num_combos_yy -
-        #            2 * tf.reduce_sum(Kw_xy))
-        num_combos_xy = tf.to_float(data_num * gen_num)
+        Kw_xy = K_xy * p1_weights_xy_normed
+        # Weighted mmd or normal.
         self.mmd = (tf.reduce_sum(K_yy_upper) / num_combos_yy -
-                    2 * tf.reduce_sum(K_xy) / num_combos_xy)
+                    2 * tf.reduce_sum(Kw_xy))
+        #num_combos_xy = tf.to_float(data_num * gen_num)
+        #self.mmd = (tf.reduce_sum(K_yy_upper) / num_combos_yy -
+        #            2 * tf.reduce_sum(K_xy) / num_combos_xy)
 
-        # Set up optimizer nodes.
+        # Define losses.
+        self.ae_loss_lambda = tf.placeholder(tf.float32, name='ae_loss_lambda')
+        self.ae_loss_real = tf.reduce_mean(tf.abs(AE_x - x))
+        self.ae_loss_fake = tf.reduce_mean(tf.abs(AE_g - g))
+        #self.ae_loss = self.ae_loss_real - self.ae_loss_lambda * self.mmd
+        self.ae_loss = self.ae_loss_real - self.k_t * self.ae_loss_fake
+        self.g_loss = self.ae_loss_fake 
+
+        # Optimizer nodes.
         if self.optimizer == 'adam':
             ae_opt = tf.train.AdamOptimizer(self.d_lr)
             g_opt = tf.train.AdamOptimizer(self.g_lr)
         else:
             raise ValueError('[!] Caution! Paper only used Adam')
         self.ae_optim = ae_opt.minimize(self.ae_loss, var_list=self.d_var)
-        pdb.set_trace()
+        self.g_optim = g_opt.minimize(self.g_loss, var_list=self.g_var,
+                                      global_step=self.step)
+        self.mmd_optim = g_opt.minimize(self.mmd, var_list=self.g_var)
+
+        # BEGAN-style control.
+        self.balance = self.ae_loss_real - self.ae_loss_fake
+        with tf.control_dependencies([self.ae_optim, self.g_optim]):
+            self.k_update = tf.assign(
+                self.k_t,
+                tf.clip_by_value(self.k_t + 0.001 * self.balance, 0, 1))
+
+        '''  
+        # Set up optimizer nodes.
+        if self.optimizer == 'adam':
+            ae_opt = tf.train.AdamOptimizer(self.d_lr)
+            g_opt = tf.train.AdamOptimizer(self.g_lr)
+        else:
+            raise ValueError('[!] Caution! Paper only used Adam')
+        self.ae_optim = ae_opt.minimize(self.ae_loss,
+                                        var_list=self.d_var)
+        # Do gradient clipping or not.
         if 0:
             gradients, variables = zip(*g_opt.compute_gradients(self.mmd))
             gradients, _ = tf.clip_by_global_norm(gradients, 1.0)
@@ -212,15 +239,20 @@ class Trainer(object):
             self.g_optim = g_opt.apply_gradients(zip(gradients, variables))
         self.g_optim = g_opt.minimize(self.mmd, global_step=self.step,
                                       var_list=self.g_var)
+        '''
 
         self.summary_op = tf.summary.merge([
             tf.summary.image("g", self.g),
             tf.summary.image("AE_g", self.AE_g),
             tf.summary.image("AE_x", self.AE_x),
             tf.summary.scalar("loss/ae_loss", self.ae_loss),
+            tf.summary.scalar("loss/ae_loss_real", self.ae_loss_real),
+            tf.summary.scalar("loss/ae_loss_fake", self.ae_loss_fake),
             tf.summary.scalar("loss/mmd", self.mmd),
+            tf.summary.scalar("misc/k_t", self.k_t),
             tf.summary.scalar("misc/d_lr", self.d_lr),
             tf.summary.scalar("misc/g_lr", self.g_lr),
+            tf.summary.scalar("misc/balance", self.balance),
         ])
 
 
@@ -238,8 +270,6 @@ class Trainer(object):
             t_cov_inv = np.load('target_encoding_cov_inv.npy') 
         except:
             print('Fetching target mean and covariance.')
-            for i in trange(0, 1000):
-                self.sess.run(self.ae_optim)
             target_enc = self.encode(test_target)
             t_mean = np.reshape(np.mean(target_enc, axis=0), [-1, 1])
             t_cov = np.cov(target_enc, rowvar=False)
@@ -250,43 +280,53 @@ class Trainer(object):
             x_fake = self.generate(z_fixed, self.model_dir, idx=0)
             self.autoencode(x_fixed, self.model_dir, idx=0, x_fake=x_fake)
 
+        if 0:
+            print('Pre-training autoencoder.')
+            for i in trange(0, 1000):
+                self.sess.run(self.ae_optim, {self.ae_loss_lambda: 0.})
+
         # Train generator using pre-trained autoencoder.
         for step in trange(self.start_step, self.max_step):
-            '''
-            self.sess.run(self.g_optim,
-                feed_dict={
-                    self.t_mean: t_mean,
-                    self.t_cov_inv: t_cov_inv})
-            pdb.set_trace()
-            '''
-
             fetch_dict = {
-                'g_optim': self.g_optim,
+                'k_update': self.k_update,
+                'mmd': self.mmd_optim
             }
             if step % self.log_step == 0:
                 fetch_dict.update({
                     'summary': self.summary_op,
-                    'ae_loss': self.ae_loss,
+                    'ae_loss_real': self.ae_loss_real,
+                    'ae_loss_fake': self.ae_loss_fake,
                     'mmd': self.mmd,
+                    'k_t': self.k_t,
                 })
             result = self.sess.run(fetch_dict,
                 feed_dict={
                     self.t_mean: t_mean,
-                    self.t_cov_inv: t_cov_inv})
+                    self.t_cov_inv: t_cov_inv,
+                    self.ae_loss_lambda: 1e-6})
 
             if step % self.log_step == 0:
                 self.summary_writer.add_summary(result['summary'], step)
                 self.summary_writer.flush()
 
-                ae_loss = result['ae_loss']
+                ae_loss_real = result['ae_loss_real']
+                ae_loss_fake = result['ae_loss_fake']
                 mmd = result['mmd']
+                k_t = result['k_t']
 
-                print('[{}/{}] AE_loss: {:.6f} MMD: {:.6f}'.format(
-                    step, self.max_step, ae_loss, mmd))
+                print(('[{}/{}] AE_loss_real: {:.6f} AE_loss_fake: {:.6f} '
+                       'MMD: {:.6f}, k_t: {:.4f}').format(step, self.max_step,
+                                                          ae_loss_real,
+                                                          ae_loss_fake, mmd,
+                                                          k_t))
 
             if step % (self.save_step) == 0:
-                x_fake = self.generate(z_fixed, self.model_dir, idx=step)
-                self.autoencode(x_fixed, self.model_dir, idx=step, x_fake=x_fake)
+                z = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
+                x_fake = self.generate(z, self.model_dir, idx=step)
+
+                x_samp = self.get_image_from_loader()
+                save_image(x_samp, '{}/x_samp.png'.format(self.model_dir))
+                self.autoencode(x_samp, self.model_dir, idx=step)
 
             if step % self.lr_update_step == self.lr_update_step - 1:
                 self.sess.run([self.g_lr_update, self.d_lr_update])
