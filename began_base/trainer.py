@@ -64,8 +64,6 @@ class Trainer(object):
         self.data_loader_target = data_loader_target
         self.dataset = config.dataset
 
-        self.beta1 = config.beta1
-        self.beta2 = config.beta2
         self.optimizer = config.optimizer
         self.batch_size = config.batch_size
 
@@ -80,9 +78,6 @@ class Trainer(object):
         self.d_lr_update = tf.assign(
             self.d_lr, tf.maximum(self.d_lr * 0.5, config.lr_lower_boundary),
             name='d_lr_update')
-
-        self.gamma = config.gamma
-        self.lambda_k = config.lambda_k
 
         self.z_dim = config.z_dim
         self.conv_hidden_num = config.conv_hidden_num
@@ -166,49 +161,57 @@ class Trainer(object):
         self.ae_loss = tf.reduce_mean(tf.abs(AE_x - x))
 
         # DEFINE MMD.
-        #self.mmd = MMD(self.x_enc, self.g_enc, self.t_mean, self.t_cov_inv)
-        if 1:
-            xe = self.x_enc 
-            ge = self.g_enc 
-            t_mean = self.t_mean
-            t_cov_inv = self.t_cov_inv
-            data_num = tf.shape(xe)[0]
-            gen_num = tf.shape(ge)[0]
-            v = tf.concat([xe, ge], 0)
-            VVT = tf.matmul(v, tf.transpose(v))
-            sqs = tf.reshape(tf.diag_part(VVT), [-1, 1])
-            sqs_tiled_horiz = tf.tile(sqs, [1, tf.shape(sqs)[0]])
-            exp_object = sqs_tiled_horiz - 2 * VVT + tf.transpose(sqs_tiled_horiz)
-            sigma = 1.
-            K = tf.exp(-0.5 * (1 / sigma) * exp_object)
-            K_yy = K[data_num:, data_num:]
-            K_xy = K[:data_num, data_num:]
-            K_yy_upper = (tf.matrix_band_part(K_yy, 0, -1) -
-                          tf.matrix_band_part(K_yy, 0, 0))
-            num_combos_yy = tf.to_float(gen_num * (gen_num - 1) / 2)
-            def prob_of_keeping(x):
-                xt_ = x - tf.transpose(t_mean)
-                x_ = tf.transpose(xt_)
-                pr = 1. - 0.5 * tf.exp(-10. * tf.matmul(tf.matmul(xt_, t_cov_inv), x_))
-                return pr
-            keeping_probs = tf.reshape(tf.map_fn(prob_of_keeping, xe), [-1, 1])
-            keeping_probs_tiled = tf.tile(keeping_probs, [1, gen_num])
-            p1_weights_xy = 1. / keeping_probs_tiled
-            p1_weights_xy_normed = p1_weights_xy / tf.reduce_sum(p1_weights_xy)
-            Kw_xy = K[:data_num, data_num:] * p1_weights_xy_normed
-            self.mmd = (tf.reduce_sum(K_yy_upper) / num_combos_yy -
-                        2 * tf.reduce_sum(Kw_xy))
+        xe = self.x_enc 
+        ge = self.g_enc 
+        t_mean = self.t_mean
+        t_cov_inv = self.t_cov_inv
+        data_num = tf.shape(xe)[0]
+        gen_num = tf.shape(ge)[0]
+        v = tf.concat([xe, ge], 0)
+        VVT = tf.matmul(v, tf.transpose(v))
+        sqs = tf.reshape(tf.diag_part(VVT), [-1, 1])
+        sqs_tiled_horiz = tf.tile(sqs, [1, tf.shape(sqs)[0]])
+        exp_object = sqs_tiled_horiz - 2 * VVT + tf.transpose(sqs_tiled_horiz)
+        sigma = 1.
+        K = tf.exp(-0.5 * (1 / sigma) * exp_object)
+        K_yy = K[data_num:, data_num:]
+        K_xy = K[:data_num, data_num:]
+        K_yy_upper = (tf.matrix_band_part(K_yy, 0, -1) -
+                      tf.matrix_band_part(K_yy, 0, 0))
+        num_combos_yy = tf.to_float(gen_num * (gen_num - 1) / 2)
+        def prob_of_keeping(x):
+            xt_ = x - tf.transpose(t_mean)
+            x_ = tf.transpose(xt_)
+            pr = 1. - 0.5 * tf.exp(-10. * tf.matmul(tf.matmul(xt_, t_cov_inv), x_))
+            return pr
+        keeping_probs = tf.reshape(tf.map_fn(prob_of_keeping, xe), [-1, 1])
+        keeping_probs_tiled = tf.tile(keeping_probs, [1, gen_num])
+        p1_weights_xy = 1. / keeping_probs_tiled
+        p1_weights_xy_normed = p1_weights_xy / tf.reduce_sum(p1_weights_xy)
+        Kw_xy = K[:data_num, data_num:] * p1_weights_xy_normed
+        #self.mmd = (tf.reduce_sum(K_yy_upper) / num_combos_yy -
+        #            2 * tf.reduce_sum(Kw_xy))
+        num_combos_xy = tf.to_float(data_num * gen_num)
+        self.mmd = (tf.reduce_sum(K_yy_upper) / num_combos_yy -
+                    2 * tf.reduce_sum(K_xy) / num_combos_xy)
 
         # Set up optimizer nodes.
         if self.optimizer == 'adam':
-            optimizer = tf.train.AdamOptimizer
+            ae_opt = tf.train.AdamOptimizer(self.d_lr)
+            g_opt = tf.train.AdamOptimizer(self.g_lr)
         else:
             raise ValueError('[!] Caution! Paper only used Adam')
-        self.ae_optim = optimizer(self.d_lr).minimize(self.ae_loss,
-                                                      var_list=self.d_var) 
-        self.g_optim = optimizer(self.g_lr).minimize(self.mmd,
-                                                     global_step=self.step,
-                                                     var_list=self.g_var)
+        self.ae_optim = ae_opt.minimize(self.ae_loss, var_list=self.d_var)
+        pdb.set_trace()
+        if 0:
+            gradients, variables = zip(*g_opt.compute_gradients(self.mmd))
+            gradients, _ = tf.clip_by_global_norm(gradients, 1.0)
+            g_idxs = ([i for i, v in enumerate(variables) if 'G/' in v.name])
+            gradients = [gradients[i] for i in g_idxs]
+            variables = [variables[i] for i in g_idxs]
+            self.g_optim = g_opt.apply_gradients(zip(gradients, variables))
+        self.g_optim = g_opt.minimize(self.mmd, global_step=self.step,
+                                      var_list=self.g_var)
 
         self.summary_op = tf.summary.merge([
             tf.summary.image("g", self.g),
