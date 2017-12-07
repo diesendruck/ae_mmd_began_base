@@ -3,16 +3,18 @@ import numpy as np
 import tensorflow as tf
 slim = tf.contrib.slim
 
-def GeneratorCNN(z, hidden_num, channels_out, repeat_num, data_format, reuse):
+
+def GeneratorCNN(z, num_filters, channels_out, repeat_num, data_format, reuse):
+    # NOTE: Changed reshape to 7x7 for 28x28 mnist.
     with tf.variable_scope("G", reuse=reuse) as vs:
-        num_output = int(np.prod([8, 8, hidden_num]))
+        num_output = int(np.prod([7, 7, num_filters]))
         x = slim.fully_connected(z, num_output, activation_fn=None)
-        x = reshape(x, 8, 8, hidden_num, data_format)
+        x = reshape(x, 7, 7, num_filters, data_format)
         
         for idx in range(repeat_num):
-            x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu,
+            x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
                             data_format=data_format)
-            x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu,
+            x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
                             data_format=data_format)
             if idx < repeat_num - 1:
                 x = upscale(x, 2, data_format)
@@ -23,16 +25,84 @@ def GeneratorCNN(z, hidden_num, channels_out, repeat_num, data_format, reuse):
     variables = tf.contrib.framework.get_variables(vs)
     return out, variables
 
-def AutoencoderCNN(x, input_channel, z_num, repeat_num, hidden_num,
+
+def AutoencoderCNN(x, input_channel, z_num, repeat_num, num_filters,
         data_format, reuse):
-    with tf.variable_scope("D", reuse=reuse) as vs:
+    # NOTE: Changed reshape to 7x7 for 28x28 mnist.
+    with tf.variable_scope("ae_enc", reuse=reuse) as vs_enc:
         # Encoder
-        x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu,
+        x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
                         data_format=data_format)
 
-        prev_channel_num = hidden_num
+        prev_channel_num = num_filters
         for idx in range(repeat_num):
-            channel_num = hidden_num * (idx + 1)
+            channel_num = num_filters * (idx + 1)
+            x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu,
+                            data_format=data_format)
+            x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu,
+                            data_format=data_format)
+            if idx < repeat_num - 1:
+                x = slim.conv2d(x, channel_num, 3, 2, activation_fn=tf.nn.elu,
+                                data_format=data_format)
+                #x = tf.contrib.layers.max_pool2d(x, [2, 2], [2, 2],
+                #                                 padding='VALID')
+
+        x = tf.reshape(x, [-1, np.prod([7, 7, channel_num])])
+        z = x = slim.fully_connected(x, z_num, activation_fn=None)
+
+    with tf.variable_scope("ae_dec", reuse=reuse) as vs_dec:
+        # Decoder
+        num_output = int(np.prod([7, 7, num_filters]))
+        x = slim.fully_connected(x, num_output, activation_fn=None)
+        x = reshape(x, 7, 7, num_filters, data_format)
+        
+        for idx in range(repeat_num):
+            x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
+                            data_format=data_format)
+            x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
+                            data_format=data_format)
+            if idx < repeat_num - 1:
+                x = upscale(x, 2, data_format)
+
+        out = slim.conv2d(x, input_channel, 3, 1, activation_fn=None,
+                          data_format=data_format)
+
+    variables_enc = tf.contrib.framework.get_variables(vs_enc)
+    variables_dec = tf.contrib.framework.get_variables(vs_dec)
+    return out, z, variables_enc, variables_dec
+
+
+def G_dec(z, filter_num, channels_out, repeat_num, data_format, reuse):
+    with tf.variable_scope("G", reuse=reuse) as vs:
+        num_output = int(np.prod([8, 8, filter_num]))
+        x = slim.fully_connected(z, num_output, activation_fn=None)
+        x = reshape(x, 8, 8, filter_num, data_format)
+        
+        for idx in range(repeat_num):
+            x = slim.conv2d(x, filter_num, 3, 1, activation_fn=tf.nn.elu,
+                            data_format=data_format)
+            x = slim.conv2d(x, filter_num, 3, 1, activation_fn=tf.nn.elu,
+                            data_format=data_format)
+            if idx < repeat_num - 1:
+                x = upscale(x, 2, data_format)
+
+        out = slim.conv2d(x, channels_out, 3, 1, activation_fn=None,
+                          data_format=data_format)
+
+    variables = tf.contrib.framework.get_variables(vs)
+    return out, variables
+
+
+def AE_enc_dec(x, input_channel, z_num, repeat_num, num_filters,
+        data_format, reuse):
+    with tf.variable_scope("ae_enc", reuse=reuse) as vs_enc:
+        # Encoder
+        x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
+                        data_format=data_format)
+
+        prev_channel_num = num_filters
+        for idx in range(repeat_num):
+            channel_num = num_filters * (idx + 1)
             x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu,
                             data_format=data_format)
             x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu,
@@ -46,15 +116,16 @@ def AutoencoderCNN(x, input_channel, z_num, repeat_num, hidden_num,
         x = tf.reshape(x, [-1, np.prod([8, 8, channel_num])])
         z = x = slim.fully_connected(x, z_num, activation_fn=None)
 
+    with tf.variable_scope("ae_dec", reuse=reuse) as vs_dec:
         # Decoder
-        num_output = int(np.prod([8, 8, hidden_num]))
+        num_output = int(np.prod([8, 8, num_filters]))
         x = slim.fully_connected(x, num_output, activation_fn=None)
-        x = reshape(x, 8, 8, hidden_num, data_format)
+        x = reshape(x, 8, 8, num_filters, data_format)
         
         for idx in range(repeat_num):
-            x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu,
+            x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
                             data_format=data_format)
-            x = slim.conv2d(x, hidden_num, 3, 1, activation_fn=tf.nn.elu,
+            x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
                             data_format=data_format)
             if idx < repeat_num - 1:
                 x = upscale(x, 2, data_format)
@@ -62,8 +133,9 @@ def AutoencoderCNN(x, input_channel, z_num, repeat_num, hidden_num,
         out = slim.conv2d(x, input_channel, 3, 1, activation_fn=None,
                           data_format=data_format)
 
-    variables = tf.contrib.framework.get_variables(vs)
-    return out, z, variables
+    variables_enc = tf.contrib.framework.get_variables(vs_enc)
+    variables_dec = tf.contrib.framework.get_variables(vs_dec)
+    return out, z, variables_enc, variables_dec
 
 
 def MMD(data, gen, t_mean, t_cov_inv, sigma=1):
@@ -147,3 +219,95 @@ def resize_nearest_neighbor(x, new_size, data_format):
 def upscale(x, scale, data_format):
     _, h, w, _ = get_conv_shape(x, data_format)
     return resize_nearest_neighbor(x, (h*scale, w*scale), data_format)
+
+###############################################################################
+# BEGIN section from Tensorflow website. For MNIST classification.
+# https://github.com/tensorflow/tensorflow/blob/r1.4/tensorflow/examples/
+#   tutorials/mnist/mnist_deep.py
+def mnistCNN(x, keep_prob):
+  """mnistCNN builds the graph for a deep net for classifying digits.
+  Args:
+    x: an input tensor with the dimensions (N_examples, 784), where 784 is the
+    number of pixels in a standard MNIST image.
+    keep_prob: tf.float32 indicating the keeping rate for dropout.
+  Returns:
+    y_logits: Tensor of shape (N_examples, 10), with values equal to the logits
+      of classifying the digit into one of 10 classes (the digits 0-9). 
+    y_probs: Tensor of shape (N_examples, 10), with values
+      equal to the probabilities of classifying the digit into one of 10 classes
+      (the digits 0-9). 
+  """
+  # Reshape to use within a convolutional neural net.
+  # Last dimension is for "features" - there is only one here, since images are
+  # grayscale -- it would be 3 for an RGB image, 4 for RGBA, etc.
+  with tf.name_scope('reshape'):
+    x_image = tf.reshape(x, [-1, 28, 28, 1])
+
+  # First convolutional layer - maps one grayscale image to 32 feature maps.
+  with tf.name_scope('conv1'):
+    W_conv1 = weight_variable([5, 5, 1, 32])
+    b_conv1 = bias_variable([32])
+    h_conv1 = tf.nn.relu(conv2d(x_image, W_conv1) + b_conv1)
+
+  # Pooling layer - downsamples by 2X.
+  with tf.name_scope('pool1'):
+    h_pool1 = max_pool_2x2(h_conv1)
+
+  # Second convolutional layer -- maps 32 feature maps to 64.
+  with tf.name_scope('conv2'):
+    W_conv2 = weight_variable([5, 5, 32, 64])
+    b_conv2 = bias_variable([64])
+    h_conv2 = tf.nn.relu(conv2d(h_pool1, W_conv2) + b_conv2)
+
+  # Second pooling layer.
+  with tf.name_scope('pool2'):
+    h_pool2 = max_pool_2x2(h_conv2)
+
+  # Fully connected layer 1 -- after 2 round of downsampling, our 28x28 image
+  # is down to 7x7x64 feature maps -- maps this to 1024 features.
+  with tf.name_scope('fc1'):
+    W_fc1 = weight_variable([7 * 7 * 64, 1024])
+    b_fc1 = bias_variable([1024])
+
+    h_pool2_flat = tf.reshape(h_pool2, [-1, 7*7*64])
+    h_fc1 = tf.nn.relu(tf.matmul(h_pool2_flat, W_fc1) + b_fc1)
+
+  # Dropout - controls the complexity of the model, prevents co-adaptation of
+  # features.
+  with tf.name_scope('dropout'):
+    h_fc1_drop = tf.nn.dropout(h_fc1, keep_prob)
+
+  # Map the 1024 features to 10 classes, one for each digit
+  with tf.name_scope('fc2'):
+    W_fc2 = weight_variable([1024, 10])
+    b_fc2 = bias_variable([10])
+
+    y_logits = tf.matmul(h_fc1_drop, W_fc2) + b_fc2
+    y_probs = tf.nn.softmax(y_logits)
+  return y_logits, y_probs
+
+
+def conv2d(x, W):
+  """conv2d returns a 2d convolution layer with full stride."""
+  return tf.nn.conv2d(x, W, strides=[1, 1, 1, 1], padding='SAME')
+
+
+def max_pool_2x2(x):
+  """max_pool_2x2 downsamples a feature map by 2X."""
+  return tf.nn.max_pool(x, ksize=[1, 2, 2, 1],
+                        strides=[1, 2, 2, 1], padding='SAME')
+
+
+def weight_variable(shape):
+  """weight_variable generates a weight variable of a given shape."""
+  initial = tf.truncated_normal(shape, stddev=0.1)
+  return tf.Variable(initial)
+
+
+def bias_variable(shape):
+  """bias_variable generates a bias variable of a given shape."""
+  initial = tf.constant(0.1, shape=shape)
+  return tf.Variable(initial)
+
+# END section from Tensorflow website.
+###############################################################################

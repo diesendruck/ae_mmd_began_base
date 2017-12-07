@@ -10,7 +10,7 @@ def get_loader(root, batch_size, scale_size, data_format, split_name=None,
     if dataset_name == 'mnist':
         is_grayscale=True
         channels = 1
-        #scale_size = 28  # TODO: Determine whether scale should be 28.
+        scale_size = 28  # TODO: Determine whether scale should be 28.
     else:
         channels = 3
     
