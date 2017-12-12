@@ -224,12 +224,12 @@ def upscale(x, scale, data_format):
 # BEGIN section from Tensorflow website. For MNIST classification.
 # https://github.com/tensorflow/tensorflow/blob/r1.4/tensorflow/examples/
 #   tutorials/mnist/mnist_deep.py
-def mnistCNN(x, keep_prob):
+def mnistCNN(x, dropout_pr):
   """mnistCNN builds the graph for a deep net for classifying digits.
   Args:
     x: an input tensor with the dimensions (N_examples, 784), where 784 is the
     number of pixels in a standard MNIST image.
-    keep_prob: tf.float32 indicating the keeping rate for dropout.
+    dropout_pr: tf.float32 indicating the keeping rate for dropout.
   Returns:
     y_logits: Tensor of shape (N_examples, 10), with values equal to the logits
       of classifying the digit into one of 10 classes (the digits 0-9). 
@@ -275,7 +275,7 @@ def mnistCNN(x, keep_prob):
   # Dropout - controls the complexity of the model, prevents co-adaptation of
   # features.
   with tf.name_scope('dropout'):
-    h_fc1_drop = tf.nn.dropout(h_fc1, keep_prob)
+    h_fc1_drop = tf.nn.dropout(h_fc1, dropout_pr)
 
   # Map the 1024 features to 10 classes, one for each digit
   with tf.name_scope('fc2'):

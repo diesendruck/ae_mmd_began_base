@@ -9,6 +9,7 @@ from glob import glob
 from tqdm import trange
 from itertools import chain
 from collections import deque
+from PIL import Image
 
 from models import *
 from utils import save_image
@@ -39,6 +40,7 @@ def to_nchw_numpy(image):
 
 
 def norm_img(image, data_format=None):
+    ''' Converts pixel values to range [-1, 1].'''
     image = image/127.5 - 1.
     if data_format:
         image = to_nhwc(image, data_format)
@@ -70,7 +72,9 @@ class Trainer(object):
         self.optimizer = config.optimizer
         self.batch_size = config.batch_size
         self.use_mmd= config.use_mmd
+        self.lambda_mmd_setting = config.lambda_mmd_setting
         self.weighted = config.weighted
+        self.do_k_update = config.do_k_update
 
         self.step = tf.Variable(0, name='step', trainable=False)
 
@@ -134,9 +138,10 @@ class Trainer(object):
 
     def build_model(self):
         self.x = self.data_loader
-        x = norm_img(self.x)
+        x = norm_img(self.x)  # Converts to [-1, 1].
         self.z = tf.random_normal([tf.shape(x)[0], self.z_dim])
-        self.k_t = tf.Variable(0., trainable=False, name='k_t')
+        self.k_t = tf.Variable(1., trainable=False, name='k_t')
+        self.wmmd_factor = tf.Variable(0., trainable=False, name='wmmd_factor')
 
         # Set up generator and autoencoder functions.
         g, self.g_var = GeneratorCNN(
@@ -158,21 +163,30 @@ class Trainer(object):
             self.test_input, self.channel, self.z_dim, self.repeat_num,
             self.conv_hidden_num, self.data_format, reuse=True)
 
-        # DEFINE MMD.
-        xe = self.x_enc 
-        ge = self.g_enc 
-        data_num = tf.shape(xe)[0]
-        gen_num = tf.shape(ge)[0]
-        v = tf.concat([xe, ge], 0)
+        ## BEGIN: MMD DEFINITON
+        on_encodings = 1
+        if on_encodings:
+            # Kernel on encodings.
+            self.xe = self.x_enc 
+            self.ge = self.g_enc 
+            sigma_list = [1., 2., 4., 8., 16.]
+        else:
+            # Kernel on full imgs.
+            self.xe = tf.reshape(x, [tf.shape(x)[0], -1]) 
+            self.ge = tf.reshape(g, [tf.shape(g)[0], -1]) 
+            sigma_list = [2.0, 5.0, 10.0, 20.0, 40.0, 80.0]
+        data_num = tf.shape(self.xe)[0]
+        gen_num = tf.shape(self.ge)[0]
+        v = tf.concat([self.xe, self.ge], 0)
         VVT = tf.matmul(v, tf.transpose(v))
         sqs = tf.reshape(tf.diag_part(VVT), [-1, 1])
         sqs_tiled_horiz = tf.tile(sqs, [1, tf.shape(sqs)[0]])
         exp_object = sqs_tiled_horiz - 2 * VVT + tf.transpose(sqs_tiled_horiz)
-        sigma_list = [1., 2., 4., 8., 16.]
         K = 0.0
         for sigma in sigma_list:
             gamma = 1.0 / (2 * sigma**2)
             K += tf.exp(-gamma * exp_object)
+        self.K = K
         K_xx = K[:data_num, data_num:]
         K_yy = K[data_num:, data_num:]
         K_xy = K[:data_num, data_num:]
@@ -182,84 +196,131 @@ class Trainer(object):
 
         # Build mnist classification, and get probabilities of keeping.
         self.build_mnist_classifier()
+        self.x_pr1 = tf.Variable(tf.ones([self.batch_size, 1]),
+            trainable=False, name='x_pr1')
+        self.x_prop1 = tf.Variable(0., trainable=False, name='x_prop1')
+        self.g_prop1 = tf.Variable(0., trainable=False, name='g_prop1')
         self.x_normed_for_mnist_prediction = (tf.reshape(x,
-            [self.batch_size, -1]) + 1.)/ 2.
-        self.batch_logit, self.batch_pr = mnistCNN(
-            self.x_normed_for_mnist_prediction, self.keep_prob)
-        self.batch_pr1 = self.batch_pr[:, 1]
+            [self.batch_size, -1]) + 1.)/ 2.  # Maps [-1, 1] to [0, 1].
+        self.g_normed_for_mnist_prediction = (tf.reshape(g,
+            [self.batch_size, -1]) + 1.)/ 2.  # Maps [-1, 1] to [0, 1].
+        '''
+        self.x_logit, self.x_pr = mnistCNN(
+            self.x_normed_for_mnist_prediction, self.dropout_pr)
+        self.g_logit, self.g_pr = mnistCNN(
+            self.g_normed_for_mnist_prediction, self.dropout_pr)
+        self.x_pr1 = self.x_pr[:, 1]
+        self.g_pr1 = self.g_pr[:, 1]
+        self.x_pr1_rounded = tf.round(self.x_pr1)
+        self.g_pr1_rounded = tf.round(self.g_pr1)
+        self.x_prop1 = tf.reduce_mean(self.x_pr1_rounded)
+        self.g_prop1 = tf.reduce_mean(self.g_pr1_rounded)
+        '''
         thin_factor = 0.75
 
         self.keeping_probs = 1. - thin_factor * tf.reshape(
-            self.batch_pr1, [-1, 1])
+            self.x_pr1, [-1, 1])
         keeping_probs_tiled = tf.tile(self.keeping_probs, [1, gen_num])
         self.p1_weights_xy = 1. / keeping_probs_tiled
         self.p1_weights_xy_normed = (
             self.p1_weights_xy / tf.reduce_sum(self.p1_weights_xy))
         Kw_xy = K_xy * self.p1_weights_xy_normed
+        num_combos_xy = tf.to_float(data_num * gen_num)
+
+        # Compute and choose between MMD values.
+        self.mmd_weighted = (
+            tf.reduce_sum(K_yy_upper) / num_combos_yy -
+            2 * tf.reduce_sum(Kw_xy) / tf.to_float(gen_num))
+        self.mmd_unweighted = (
+            tf.reduce_sum(K_yy_upper) / num_combos_yy -
+            2 * tf.reduce_sum(K_xy) / num_combos_xy)
         if self.weighted:
-            self.mmd = (tf.reduce_sum(K_yy_upper) / num_combos_yy -
-                        2 * tf.reduce_sum(Kw_xy) / tf.to_float(gen_num))
+            self.mmd = (
+                self.wmmd_factor * self.mmd_weighted +
+                (1. - self.wmmd_factor) * self.mmd_unweighted)
         else:
-            num_combos_xy = tf.to_float(data_num * gen_num)
-            self.mmd = (tf.reduce_sum(K_yy_upper) / num_combos_yy -
-                        2 * tf.reduce_sum(K_xy) / num_combos_xy)
+            self.mmd = self.mmd_unweighted 
+        ## END: MMD DEFINITON
 
         # Define losses.
-        self.ae_loss_lambda = tf.placeholder(tf.float32, name='ae_loss_lambda')
-        self.ae_loss_real = tf.reduce_sum(tf.square(AE_x - x))
-        self.ae_loss_fake = tf.reduce_sum(tf.square(AE_g - g))
-        self.ae_loss = self.ae_loss_real + self.ae_loss_fake - self.mmd
+        #self.lambda_ae = tf.placeholder(tf.float32, name='lambda_ae')
+        #self.lambda_mmd = tf.placeholder(tf.float32, name='lambda_mmd')
+        self.lambda_ae = tf.Variable(0., trainable=False, name='lambda_ae')
+        self.lambda_mmd = tf.Variable(0., trainable=False, name='lambda_mmd')
+        self.ae_loss_real = tf.reduce_mean(tf.square(AE_x - x))
+        self.ae_loss_fake = tf.reduce_mean(tf.square(AE_g - g))
+        self.ae_loss = self.ae_loss_real + self.k_t * self.ae_loss_fake
+        self.d_loss = self.lambda_ae * self.ae_loss - self.lambda_mmd * self.mmd
         self.g_loss = self.mmd
 
         # Optimizer nodes.
         if self.optimizer == 'adam':
             ae_opt = tf.train.AdamOptimizer(self.d_lr)
+            d_opt = tf.train.AdamOptimizer(self.d_lr)
             g_opt = tf.train.AdamOptimizer(self.g_lr)
-        elif self.optimizer == 'RMSProp':
+        elif self.optimizer == 'rmsprop':
             ae_opt = tf.train.RMSPropOptimizer(self.d_lr)
+            d_opt = tf.train.RMSPropOptimizer(self.d_lr)
             g_opt = tf.train.RMSPropOptimizer(self.g_lr)
         elif self.optimizer == 'sgd':
             ae_opt = tf.train.GradientDescentOptimizer(self.d_lr)
+            d_opt = tf.train.GradientDescentOptimizer(self.d_lr)
             g_opt = tf.train.GradientDescentOptimizer(self.g_lr)
 
 
-        # Clip encoder only! 
+        # Set up optim nodes. Clip encoder only! 
         if 1:
-            enc_grads, enc_vars = zip(*ae_opt.compute_gradients(
-                self.ae_loss, var_list=self.d_var_enc))
-            dec_grads, dec_vars = zip(*ae_opt.compute_gradients(
-                self.ae_loss, var_list=self.d_var_dec))
+            enc_grads_, enc_vars_ = zip(*ae_opt.compute_gradients(
+                self.ae_loss_real, var_list=self.d_var_enc))
+            dec_grads_, dec_vars_ = zip(*ae_opt.compute_gradients(
+                self.ae_loss_real, var_list=self.d_var_dec))
+            enc_grads_clipped_ = tuple(
+                [tf.clip_by_value(g, -0.01, 0.01) for g in enc_grads_])
+            ae_grads_ = enc_grads_clipped_ + dec_grads_
+            ae_vars_ = enc_vars_ + dec_vars_
+            self.ae_optim = ae_opt.apply_gradients(zip(ae_grads_, ae_vars_))
+
+            enc_grads, enc_vars = zip(*d_opt.compute_gradients(
+                self.d_loss, var_list=self.d_var_enc))
+            dec_grads, dec_vars = zip(*d_opt.compute_gradients(
+                self.d_loss, var_list=self.d_var_dec))
             enc_grads_clipped = tuple(
                 [tf.clip_by_value(g, -0.01, 0.01) for g in enc_grads])
-            ae_grads = enc_grads_clipped + dec_grads
-            ae_vars = enc_vars + dec_vars
-            self.ae_optim = ae_opt.apply_gradients(zip(ae_grads, ae_vars))
+            d_grads = enc_grads_clipped + dec_grads
+            d_vars = enc_vars + dec_vars
+            self.d_optim = d_opt.apply_gradients(zip(d_grads, d_vars))
         else:
-            all_ae_vars = self.d_var_enc + self.d_var_dec
-            self.ae_optim = ae_opt.minimize(self.ae_loss, var_list=all_ae_vars)
-
+            ae_vars = self.d_var_enc + self.d_var_dec
+            self.ae_optim = ae_opt.minimize(self.ae_loss_real, var_list=ae_vars)
+            self.d_optim = d_opt.minimize(self.d_loss, var_list=ae_vars)
         self.g_optim = g_opt.minimize(
             self.g_loss, var_list=self.g_var, global_step=self.step)
 
         # BEGAN-style control. NOT CURRENTLY IN USE.
         self.balance = self.ae_loss_real - self.ae_loss_fake
-        with tf.control_dependencies([self.ae_optim, self.g_optim]):
+        with tf.control_dependencies([self.d_optim, self.g_optim]):
             self.k_update = tf.assign(
                 self.k_t,
-                tf.clip_by_value(self.k_t + 0.001 * self.balance, 0, 1))
+                tf.clip_by_value(self.k_t - 0.001 * self.balance, 0, 1)
+                )
 
         self.summary_op = tf.summary.merge([
             tf.summary.image("g", self.g),
             tf.summary.image("AE_g", self.AE_g),
+            tf.summary.image("x", to_nhwc(self.x, self.data_format)),
             tf.summary.image("AE_x", self.AE_x),
-            tf.summary.scalar("loss/ae_loss", self.ae_loss),
+            tf.summary.scalar("loss/d_loss", self.d_loss),
             tf.summary.scalar("loss/ae_loss_real", self.ae_loss_real),
             tf.summary.scalar("loss/ae_loss_fake", self.ae_loss_fake),
             tf.summary.scalar("loss/mmd", self.mmd),
+            tf.summary.scalar("loss/mmd_u", self.mmd_unweighted),
+            tf.summary.scalar("loss/mmd_w", self.mmd_weighted),
             tf.summary.scalar("misc/k_t", self.k_t),
             tf.summary.scalar("misc/d_lr", self.d_lr),
             tf.summary.scalar("misc/g_lr", self.g_lr),
             tf.summary.scalar("misc/balance", self.balance),
+            tf.summary.scalar("prop/x_prop1", self.x_prop1),
+            tf.summary.scalar("prop/g_prop1", self.g_prop1),
         ])
 
         
@@ -271,12 +332,13 @@ class Trainer(object):
         self.y_mnist = tf.placeholder(tf.float32, [None, 10])
 
         # Build the graph for the deep net
-        self.keep_prob = tf.placeholder(tf.float32)
-        self.y_pred, self.y_pred_pr = mnistCNN(self.x_mnist, self.keep_prob)
+        self.dropout_pr = tf.placeholder(tf.float32)
+        self.label_pred, self.label_pred_pr = mnistCNN(self.x_mnist, self.dropout_pr)
+        self.label_pred_pr1 = self.label_pred_pr[:, 1] 
 
         with tf.name_scope('loss'):
             cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
-                labels=self.y_mnist, logits=self.y_pred)
+                labels=self.y_mnist, logits=self.label_pred)
             cross_entropy = tf.reduce_mean(cross_entropy)
 
         with tf.name_scope('adam_optimizer'):
@@ -284,55 +346,59 @@ class Trainer(object):
 
         with tf.name_scope('accuracy'):
             correct_prediction = tf.equal(
-                tf.argmax(self.y_pred, 1), tf.argmax(self.y_mnist, 1))
+                tf.argmax(self.label_pred, 1), tf.argmax(self.y_mnist, 1))
             correct_prediction = tf.cast(correct_prediction, tf.float32)
         self.mnist_classifier_accuracy = tf.reduce_mean(correct_prediction)
 
 
     def train(self):
+        #######################################################################
         # BEGIN mnist classifier. First train the thinning fn (aka Classifier)
         mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
-        for i in range(1000):
+        for i in range(2000):
             batch = mnist.train.next_batch(64)
             if i % 100 == 0:
                 train_accuracy = self.sess.run(self.mnist_classifier_accuracy,
                     feed_dict={
                         self.x_mnist: batch[0],
                         self.y_mnist: batch[1],
-                        self.keep_prob: 1.0})
+                        self.dropout_pr: 1.0})
                 print('step %d, training accuracy %g' % (i, train_accuracy))
             self.sess.run(self.train_step,
                 feed_dict={
                     self.x_mnist: batch[0],
                     self.y_mnist: batch[1],
-                    self.keep_prob: 0.5})
+                    self.dropout_pr: 0.5})
         print('test accuracy %g' % self.sess.run(
             self.mnist_classifier_accuracy,
                 feed_dict={
                     self.x_mnist: mnist.test.images,
                     self.y_mnist: mnist.test.labels,
-                    self.keep_prob: 1.0}))
+                    self.dropout_pr: 1.0}))
         # END mnist classifier.
+        #######################################################################
 
         print('\n{}\n'.format(self.config))
         z_fixed = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
         x_fixed = self.get_image_from_loader()
         save_image(x_fixed, '{}/x_fixed.png'.format(self.model_dir))
-
+        '''
+        im = Image.fromarray(np.reshape(batch[0][0], [28, 28])).convert('RGB')
+        im.save('{}/mnist_fixed.png'.format(self.model_dir))
+        '''
 
         # Train generator using pre-trained autoencoder.
         for step in trange(self.start_step, self.max_step):
             # Determine what will be fetched, and occasionally fetch items
             # useful for logging and saving.
-            if self.use_mmd:
+            if self.do_k_update:
                 fetch_dict = {
-                    #'k_update': self.k_update,
-                    'ae_optim': self.ae_optim,
-                    'g_optim': self.g_optim,
+                    'k_update': self.k_update,
                 }
             else:
                 fetch_dict = {
-                    'k_update': self.k_update,
+                    'd_optim': self.d_optim,
+                    'g_optim': self.g_optim,
                 }
             if step % self.log_step == 0:
                 fetch_dict.update({
@@ -344,21 +410,73 @@ class Trainer(object):
                     'keeping_probs': self.keeping_probs,
                 })
 
-            # Run the previously defined fetch items.
-            if step < 25 or step % 500 == 0:
-                for _ in range(10):
-                    self.sess.run(self.ae_optim, {self.keep_prob: 1.0})
+            # Run training with the previously defined fetch items.
+            '''
+            if step == 0:
+                for _ in range(5000):
+                    self.sess.run(self.ae_optim, {self.dropout_pr: 1.0})
+            elif step < 25 or step % 500 == 0:
+                for _ in range(100):
+                    self.sess.run(self.d_optim, {self.dropout_pr: 1.0})
             else:
                 for _ in range(5):
-                    self.sess.run(self.ae_optim, {self.keep_prob: 1.0})
+                    self.sess.run(self.d_optim, {self.dropout_pr: 1.0})
+            '''
+            pretrain1 = 0
+            pretrain2 = 0
+            pretrain_steps = pretrain2
+            if step < pretrain1:
+                # Just autoencoder on real data.
+                aer = self.sess.run([self.ae_loss_real, self.ae_optim],
+                    {self.dropout_pr: 1.0})
+                if step % 500 == 0:
+                    print('ae_loss_real: {}'.format(aer[0]))
+            elif step >= pretrain1 and step < pretrain2:
+                # Autoencoder on real and fake.
+                aer = self.sess.run(
+                    [self.ae_loss_real, self.ae_loss_fake, self.d_optim],
+                    {self.dropout_pr: 1.0})
+                if step % 500 == 0:
+                    print('ae_loss_real: {}, ae_loss_fake: {}'.format(aer[0], aer[1]))
+            else:
+                # Pre-fetch data and simulations, and compute classifier probs.
+                x_, z_ = self.sess.run([self.x, self.z])
+                x_mnistcnn, g_mnistcnn = self.sess.run([
+                        self.x_normed_for_mnist_prediction,
+                        self.g_normed_for_mnist_prediction],
+                    feed_dict={
+                        self.x: x_,
+                        self.z: z_})
+                x_pred_pr1 = self.sess.run(
+                    self.label_pred_pr1,
+                    feed_dict={
+                        self.x_mnist: x_mnistcnn,
+                        self.dropout_pr: 1.0})
+                g_pred_pr1 = self.sess.run(
+                    self.label_pred_pr1,
+                    feed_dict={
+                        self.x_mnist: g_mnistcnn,
+                        self.dropout_pr: 1.0})
 
-            result = self.sess.run(fetch_dict,
-                feed_dict={
-                    self.ae_loss_lambda: 1e-6,
-                    self.keep_prob: 1.0})
+                # Run full training step on pre-fetched data and simulations.
+                result = self.sess.run(fetch_dict,
+                    feed_dict={
+                        self.x: x_,
+                        self.z: z_,
+                        self.x_pr1: np.reshape(x_pred_pr1, [-1, 1]),
+                        self.x_prop1: np.mean(x_pred_pr1),
+                        self.g_prop1: np.mean(g_pred_pr1),
+                        self.lambda_ae: 1.0,
+                        self.lambda_mmd: 1.0, 
+                        self.wmmd_factor: 0.0, 
+                        #self.lambda_mmd: min(
+                        #    (float(step) - pretrain_steps) / 20000., 1.),
+                        #self.wmmd_factor: min(
+                        #    (float(step) - pretrain_steps) / 20000., 1.),
+                        self.dropout_pr: 1.0})
 
             # Log and save as needed.
-            if step % self.log_step == 0:
+            if step > pretrain_steps and step % self.log_step == 0:
                 self.summary_writer.add_summary(result['summary'], step)
                 self.summary_writer.flush()
                 ae_loss_real = result['ae_loss_real']
@@ -371,10 +489,12 @@ class Trainer(object):
                            k_t))
             if step % (self.save_step) == 0:
                 z = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
-                x_fake = self.generate(z, self.model_dir, idx=step)
-                x_samp = self.get_image_from_loader()
-                save_image(x_samp, '{}/x_samp.png'.format(self.model_dir))
-                self.autoencode(x_samp, self.model_dir, idx=step)
+                gen_rand = self.generate(z, self.model_dir, idx='r'+str(step))
+                gen_fixed = self.generate(z_fixed, self.model_dir, idx=step)
+                if step == 0:
+                    x_samp = self.get_image_from_loader()
+                    save_image(x_samp, '{}/x_samp.png'.format(self.model_dir))
+                #self.autoencode(x_samp, self.model_dir, idx=step)
             if step % self.lr_update_step == self.lr_update_step - 1:
                 self.sess.run([self.g_lr_update, self.d_lr_update])
 
@@ -404,7 +524,7 @@ class Trainer(object):
     def generate(self, inputs, root_path=None, path=None, idx=None, save=True):
         x = self.sess.run(self.g, {self.z: inputs})
         if path is None and save:
-            path = os.path.join(root_path, '{}_G.png'.format(idx))
+            path = os.path.join(root_path, 'G_{}.png'.format(idx))
             save_image(x, path)
             print("[*] Samples saved: {}".format(path))
         return x
