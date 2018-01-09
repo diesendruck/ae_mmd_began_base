@@ -260,7 +260,7 @@ class Trainer(object):
         else:
             self.ae_loss_real = tf.reduce_mean(tf.square(AE_x - x))
         self.ae_loss_fake = tf.reduce_mean(tf.square(AE_g - g))
-        self.ae_loss = self.ae_loss_real #+ self.k_t * self.ae_loss_fake
+        self.ae_loss = self.ae_loss_real + self.k_t * self.ae_loss_fake
         self.fm1 = tf.reduce_mean(self.ge, axis=0) - tf.reduce_mean(self.xe, axis=0)
         self.fm2 = tf.nn.relu(self.fm1)
         self.fm3 = tf.reduce_mean(self.fm2)
@@ -319,10 +319,10 @@ class Trainer(object):
         # BEGAN-style control.
         self.balance = self.ae_loss_real - self.ae_loss_fake
         with tf.control_dependencies([self.d_optim, self.g_optim]):
-            #self.k_update = tf.assign(
-            #    self.k_t,
-            #    tf.clip_by_value(self.k_t - 0.1 * self.balance, 0, 500))
-            self.k_update = tf.assign(self.k_t, 0)
+            self.k_update = tf.assign(
+                self.k_t,
+                tf.clip_by_value(self.k_t - 0.1 * self.balance, 0, 500))
+            #self.k_update = tf.assign(self.k_t, 0)
 
         self.summary_op = tf.summary.merge([
             tf.summary.image("a_g", self.g, max_outputs=9),
@@ -377,7 +377,7 @@ class Trainer(object):
         #######################################################################
         # BEGIN mnist classifier. First train the thinning fn (aka Classifier)
         mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
-        for i in range(2000):
+        for i in range(5000):
             batch = mnist.train.next_batch(64)
             if i % 100 == 0:
                 train_accuracy = self.sess.run(self.mnist_classifier_accuracy,
@@ -404,10 +404,6 @@ class Trainer(object):
         z_fixed = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
         x_fixed = self.get_image_from_loader()
         save_image(x_fixed, '{}/x_fixed.png'.format(self.model_dir))
-        '''
-        im = Image.fromarray(np.reshape(batch[0][0], [28, 28])).convert('RGB')
-        im.save('{}/mnist_fixed.png'.format(self.model_dir))
-        '''
 
         # Train generator.
         for step in trange(self.start_step, self.max_step):
@@ -489,11 +485,12 @@ class Trainer(object):
 
                 # Run full training step on pre-fetched data and simulations.
                 if step % 500 == 0:
-                    for _ in range(0):
+                    for _ in range(100):
                         self.sess.run(self.d_optim, {self.dropout_pr: 1.0})
                 else:
-                    for _ in range(0):
-                        self.sess.run(self.d_optim, {self.dropout_pr: 1.0})
+                    if step > 10000:
+                        for _ in range(19):
+                            self.sess.run(self.g_optim, {self.dropout_pr: 1.0})
                 result = self.sess.run(fetch_dict,
                     feed_dict={
                         self.x: x_,
