@@ -88,7 +88,7 @@ class Trainer(object):
             name='d_lr_update')
 
         self.z_dim = config.z_dim
-        self.conv_hidden_num = config.conv_hidden_num
+        self.num_conv_filters = config.num_conv_filters
         self.scale_size = config.scale_size
 
         self.model_dir = config.model_dir
@@ -141,15 +141,14 @@ class Trainer(object):
         x = norm_img(self.x)  # Converts to [-1, 1].
         self.z = tf.random_normal([tf.shape(x)[0], self.z_dim])
         self.k_t = tf.Variable(1., trainable=False, name='k_t')
-        self.wmmd_factor = tf.Variable(0., trainable=False, name='wmmd_factor')
 
         # Set up generator and autoencoder functions.
         g, self.g_var = GeneratorCNN(
-            self.z, self.conv_hidden_num, self.channel,
+            self.z, self.num_conv_filters, self.channel,
             self.repeat_num, self.data_format, reuse=False)
         d_out, d_enc, self.d_var_enc, self.d_var_dec = AutoencoderCNN(
             tf.concat([x, g], 0), self.channel, self.z_dim, self.repeat_num,
-            self.conv_hidden_num, self.data_format, reuse=False)
+            self.num_conv_filters, self.data_format, reuse=False)
         AE_x, AE_g = tf.split(d_out, 2)
         self.x_enc, self.g_enc = tf.split(d_enc, 2)
         self.g = denorm_img(g, self.data_format)
@@ -161,7 +160,7 @@ class Trainer(object):
             shape=[None, self.channel, self.scale_size, self.scale_size])
         _, self.test_enc, _, _ = AutoencoderCNN(
             self.test_input, self.channel, self.z_dim, self.repeat_num,
-            self.conv_hidden_num, self.data_format, reuse=True)
+            self.num_conv_filters, self.data_format, reuse=True)
 
         ## BEGIN: MMD DEFINITON
         on_encodings = 1
@@ -190,8 +189,11 @@ class Trainer(object):
         K_xx = K[:data_num, data_num:]
         K_yy = K[data_num:, data_num:]
         K_xy = K[:data_num, data_num:]
+        K_xx_upper = (tf.matrix_band_part(K_xx, 0, -1) -
+                      tf.matrix_band_part(K_xx, 0, 0))
         K_yy_upper = (tf.matrix_band_part(K_yy, 0, -1) -
                       tf.matrix_band_part(K_yy, 0, 0))
+        num_combos_xx = tf.to_float(data_num * (data_num - 1) / 2)
         num_combos_yy = tf.to_float(gen_num * (gen_num - 1) / 2)
 
         # Build mnist classification, and get probabilities of keeping.
@@ -204,54 +206,72 @@ class Trainer(object):
             [self.batch_size, -1]) + 1.)/ 2.  # Maps [-1, 1] to [0, 1].
         self.g_normed_for_mnist_prediction = (tf.reshape(g,
             [self.batch_size, -1]) + 1.)/ 2.  # Maps [-1, 1] to [0, 1].
-        '''
-        self.x_logit, self.x_pr = mnistCNN(
-            self.x_normed_for_mnist_prediction, self.dropout_pr)
-        self.g_logit, self.g_pr = mnistCNN(
-            self.g_normed_for_mnist_prediction, self.dropout_pr)
-        self.x_pr1 = self.x_pr[:, 1]
-        self.g_pr1 = self.g_pr[:, 1]
-        self.x_pr1_rounded = tf.round(self.x_pr1)
-        self.g_pr1_rounded = tf.round(self.g_pr1)
-        self.x_prop1 = tf.reduce_mean(self.x_pr1_rounded)
-        self.g_prop1 = tf.reduce_mean(self.g_pr1_rounded)
-        '''
         thin_factor = 0.75
 
         self.keeping_probs = 1. - thin_factor * tf.reshape(
             self.x_pr1, [-1, 1])
         keeping_probs_tiled = tf.tile(self.keeping_probs, [1, gen_num])
+        # Autoencoder weights.
+        self.p1_weights_ae = 1. / self.keeping_probs
+        self.p1_weights_ae_normed = (
+            self.p1_weights_ae / tf.reduce_sum(self.p1_weights_ae))
+        # MMD weights.
         self.p1_weights_xy = 1. / keeping_probs_tiled
         self.p1_weights_xy_normed = (
             self.p1_weights_xy / tf.reduce_sum(self.p1_weights_xy))
+        self.p1p2_weights_xx = (
+            self.p1_weights_xy * tf.transpose(self.p1_weights_xy))
+        self.p1p2_weights_xx_upper = (
+            tf.matrix_band_part(self.p1p2_weights_xx, 0, -1) -
+            tf.matrix_band_part(self.p1p2_weights_xx, 0, 0))
+        self.p1p2_weights_xx_upper_normed = (
+            self.p1p2_weights_xx_upper /
+            tf.reduce_sum(self.p1p2_weights_xx_upper))
+        Kw_xx_upper = K_xx_upper * self.p1p2_weights_xx_upper_normed
         Kw_xy = K_xy * self.p1_weights_xy_normed
         num_combos_xy = tf.to_float(data_num * gen_num)
 
         # Compute and choose between MMD values.
         self.mmd_weighted = (
+            tf.reduce_sum(Kw_xx_upper) +
             tf.reduce_sum(K_yy_upper) / num_combos_yy -
-            2 * tf.reduce_sum(Kw_xy) / tf.to_float(gen_num))
+            2 * tf.reduce_sum(Kw_xy)) #/ tf.to_float(gen_num))
         self.mmd_unweighted = (
+            tf.reduce_sum(K_xx_upper) / num_combos_xx +
             tf.reduce_sum(K_yy_upper) / num_combos_yy -
             2 * tf.reduce_sum(K_xy) / num_combos_xy)
         if self.weighted:
-            self.mmd = (
-                self.wmmd_factor * self.mmd_weighted +
-                (1. - self.wmmd_factor) * self.mmd_unweighted)
+            print('WEIGHTED MMD')
+            self.mmd = self.mmd_weighted
         else:
             self.mmd = self.mmd_unweighted 
         ## END: MMD DEFINITON
 
         # Define losses.
-        #self.lambda_ae = tf.placeholder(tf.float32, name='lambda_ae')
-        #self.lambda_mmd = tf.placeholder(tf.float32, name='lambda_mmd')
-        self.lambda_ae = tf.Variable(0., trainable=False, name='lambda_ae')
         self.lambda_mmd = tf.Variable(0., trainable=False, name='lambda_mmd')
-        self.ae_loss_real = tf.reduce_mean(tf.square(AE_x - x))
+        self.lambda_ae = tf.Variable(0., trainable=False, name='lambda_ae')
+        self.lambda_fm = tf.Variable(0., trainable=False, name='lambda_fm')
+        if self.weighted:
+            print('WEIGHTED AE')
+            self.ae_loss_real = tf.reduce_sum(
+                self.p1_weights_ae_normed *
+                tf.reshape(tf.reduce_sum(tf.square(AE_x - x), [1, 2, 3]),
+                    [-1, 1]))
+        else:
+            self.ae_loss_real = tf.reduce_mean(tf.square(AE_x - x))
         self.ae_loss_fake = tf.reduce_mean(tf.square(AE_g - g))
-        self.ae_loss = self.ae_loss_real + self.k_t * self.ae_loss_fake
-        self.d_loss = self.lambda_ae * self.ae_loss - self.lambda_mmd * self.mmd
-        self.g_loss = self.mmd
+        self.ae_loss = self.ae_loss_real #+ self.k_t * self.ae_loss_fake
+        self.fm1 = tf.reduce_mean(self.ge, axis=0) - tf.reduce_mean(self.xe, axis=0)
+        self.fm2 = tf.nn.relu(self.fm1)
+        self.fm3 = tf.reduce_mean(self.fm2)
+        self.first_moment_loss = -1. * self.fm3
+        self.d_loss = (
+            self.lambda_ae * self.ae_loss -
+            self.lambda_mmd * self.mmd -
+            self.lambda_fm * self.first_moment_loss)
+        self.g_loss = (
+            self.lambda_mmd * self.mmd +
+            self.lambda_fm * self.first_moment_loss)
 
         # Optimizer nodes.
         if self.optimizer == 'adam':
@@ -296,25 +316,27 @@ class Trainer(object):
         self.g_optim = g_opt.minimize(
             self.g_loss, var_list=self.g_var, global_step=self.step)
 
-        # BEGAN-style control. NOT CURRENTLY IN USE.
+        # BEGAN-style control.
         self.balance = self.ae_loss_real - self.ae_loss_fake
         with tf.control_dependencies([self.d_optim, self.g_optim]):
-            self.k_update = tf.assign(
-                self.k_t,
-                tf.clip_by_value(self.k_t - 0.001 * self.balance, 0, 1)
-                )
+            #self.k_update = tf.assign(
+            #    self.k_t,
+            #    tf.clip_by_value(self.k_t - 0.1 * self.balance, 0, 500))
+            self.k_update = tf.assign(self.k_t, 0)
 
         self.summary_op = tf.summary.merge([
-            tf.summary.image("g", self.g),
-            tf.summary.image("AE_g", self.AE_g),
-            tf.summary.image("x", to_nhwc(self.x, self.data_format)),
-            tf.summary.image("AE_x", self.AE_x),
+            tf.summary.image("a_g", self.g, max_outputs=9),
+            tf.summary.image("b_AE_g", self.AE_g, max_outputs=9),
+            tf.summary.image("c_x", to_nhwc(self.x, self.data_format),
+                max_outputs=9),
+            tf.summary.image("d_AE_x", self.AE_x, max_outputs=9),
             tf.summary.scalar("loss/d_loss", self.d_loss),
             tf.summary.scalar("loss/ae_loss_real", self.ae_loss_real),
             tf.summary.scalar("loss/ae_loss_fake", self.ae_loss_fake),
             tf.summary.scalar("loss/mmd", self.mmd),
             tf.summary.scalar("loss/mmd_u", self.mmd_unweighted),
             tf.summary.scalar("loss/mmd_w", self.mmd_weighted),
+            tf.summary.scalar("loss/first_moment", self.first_moment_loss),
             tf.summary.scalar("misc/k_t", self.k_t),
             tf.summary.scalar("misc/d_lr", self.d_lr),
             tf.summary.scalar("misc/g_lr", self.g_lr),
@@ -387,9 +409,9 @@ class Trainer(object):
         im.save('{}/mnist_fixed.png'.format(self.model_dir))
         '''
 
-        # Train generator using pre-trained autoencoder.
+        # Train generator.
         for step in trange(self.start_step, self.max_step):
-            # Determine what will be fetched, and occasionally fetch items
+            # Set up basket of items to be run. Occasionally fetch items
             # useful for logging and saving.
             if self.do_k_update:
                 fetch_dict = {
@@ -405,42 +427,49 @@ class Trainer(object):
                     'summary': self.summary_op,
                     'ae_loss_real': self.ae_loss_real,
                     'ae_loss_fake': self.ae_loss_fake,
+                    'fm1': self.fm1,
+                    'fm2': self.fm2,
+                    'fm3': self.fm3,
+                    'first_moment_loss': self.first_moment_loss,
                     'mmd': self.mmd,
                     'k_t': self.k_t,
                     'keeping_probs': self.keeping_probs,
                 })
 
-            # Run training with the previously defined fetch items.
-            '''
-            if step == 0:
-                for _ in range(5000):
-                    self.sess.run(self.ae_optim, {self.dropout_pr: 1.0})
-            elif step < 25 or step % 500 == 0:
-                for _ in range(100):
-                    self.sess.run(self.d_optim, {self.dropout_pr: 1.0})
-            else:
-                for _ in range(5):
-                    self.sess.run(self.d_optim, {self.dropout_pr: 1.0})
-            '''
+            # Optionally pre-train autoencoder.
             pretrain1 = 0
             pretrain2 = 0
-            pretrain_steps = pretrain2
+            pretrain_steps = pretrain1 + pretrain2
             if step < pretrain1:
-                # Just autoencoder on real data.
+                # Pretrain1: Autoencoder on real.
                 aer = self.sess.run([self.ae_loss_real, self.ae_optim],
                     {self.dropout_pr: 1.0})
                 if step % 500 == 0:
                     print('ae_loss_real: {}'.format(aer[0]))
-            elif step >= pretrain1 and step < pretrain2:
-                # Autoencoder on real and fake.
+            elif step >= pretrain1 and step < pretrain_steps:
+                self.d_lr = self.config.d_lr
+                # Pretrain2: Autoencoder on real and fake.
                 aer = self.sess.run(
                     [self.ae_loss_real, self.ae_loss_fake, self.d_optim],
                     {self.dropout_pr: 1.0})
                 if step % 500 == 0:
-                    print('ae_loss_real: {}, ae_loss_fake: {}'.format(aer[0], aer[1]))
+                    print('ae_loss_real: {}, ae_loss_fake: {}'.format(
+                        aer[0], aer[1]))
             else:
+                # Main train stage.
+                # Train a bit with mmd5050 (target), then switch to wmmd8020.
+                #if step < pretrain_steps + 5000:
+                if step < 0:
+                    self.weighted = False 
+                    x_ = self.get_image_from_loader_target().transpose(
+                        [0, 3, 1, 2])
+                    z_ = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
+                else:
+                    self.weighted = True 
+                    x_ = self.get_image_from_loader().transpose([0, 3, 1, 2])
+                    z_ = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
                 # Pre-fetch data and simulations, and compute classifier probs.
-                x_, z_ = self.sess.run([self.x, self.z])
+                #x_, z_ = self.sess.run([self.x, self.z])
                 x_mnistcnn, g_mnistcnn = self.sess.run([
                         self.x_normed_for_mnist_prediction,
                         self.g_normed_for_mnist_prediction],
@@ -459,6 +488,12 @@ class Trainer(object):
                         self.dropout_pr: 1.0})
 
                 # Run full training step on pre-fetched data and simulations.
+                if step % 500 == 0:
+                    for _ in range(0):
+                        self.sess.run(self.d_optim, {self.dropout_pr: 1.0})
+                else:
+                    for _ in range(0):
+                        self.sess.run(self.d_optim, {self.dropout_pr: 1.0})
                 result = self.sess.run(fetch_dict,
                     feed_dict={
                         self.x: x_,
@@ -466,13 +501,9 @@ class Trainer(object):
                         self.x_pr1: np.reshape(x_pred_pr1, [-1, 1]),
                         self.x_prop1: np.mean(x_pred_pr1),
                         self.g_prop1: np.mean(g_pred_pr1),
+                        self.lambda_mmd: self.lambda_mmd_setting, 
                         self.lambda_ae: 1.0,
-                        self.lambda_mmd: 1.0, 
-                        self.wmmd_factor: 0.0, 
-                        #self.lambda_mmd: min(
-                        #    (float(step) - pretrain_steps) / 20000., 1.),
-                        #self.wmmd_factor: min(
-                        #    (float(step) - pretrain_steps) / 20000., 1.),
+                        self.lambda_fm: 0.0,
                         self.dropout_pr: 1.0})
 
             # Log and save as needed.
@@ -481,12 +512,13 @@ class Trainer(object):
                 self.summary_writer.flush()
                 ae_loss_real = result['ae_loss_real']
                 ae_loss_fake = result['ae_loss_fake']
+                first_moment_loss = result['first_moment_loss']
                 mmd = result['mmd']
                 k_t = result['k_t']
-                print(('[{}/{}] AE_loss_real: {:.6f} AE_loss_fake: {:.6f} '
-                       'MMD: {:.6f}, k_t: {:.4f}').format(
-                           step, self.max_step, ae_loss_real, ae_loss_fake, mmd,
-                           k_t))
+                print(('[{}/{}] LOSSES: ae_real/fake: {:.6f}, {:.6f} '
+                    'fm: {:.6f} mmd: {:.6f}, k_t: {:.4f}').format(
+                        step, self.max_step, ae_loss_real, ae_loss_fake,
+                        first_moment_loss, mmd, k_t))
             if step % (self.save_step) == 0:
                 z = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
                 gen_rand = self.generate(z, self.model_dir, idx='r'+str(step))
@@ -509,7 +541,7 @@ class Trainer(object):
             self.z_r_update = tf.assign(self.z_r, self.z)
 
         g_z_r, _ = GeneratorCNN(
-            self.z_r, self.conv_hidden_num, self.channel, self.repeat_num,
+            self.z_r, self.num_conv_filters, self.channel, self.repeat_num,
             self.data_format, reuse=True)
 
         with tf.variable_scope("test") as vs:

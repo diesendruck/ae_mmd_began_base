@@ -26,12 +26,14 @@ def main(config):
         batch_size = config.sample_per_image
         do_shuffle = False
 
+    dir_loader = 'train8020'
+    dir_target = 'train5050'
     data_loader = get_loader(
             data_path, config.batch_size, config.scale_size,
-            config.data_format, config.split)
+            config.data_format, config.split, target=dir_loader)
     data_loader_target = get_loader(
-            data_path, config.target_num, config.scale_size,
-            config.data_format, config.split, target=True)
+            data_path, config.batch_size, config.scale_size,
+            config.data_format, config.split, target=dir_target)
     trainer = Trainer(config, data_loader, data_loader_target)
 
     if config.is_train:

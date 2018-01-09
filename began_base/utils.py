@@ -1,6 +1,7 @@
 from __future__ import print_function
 
 import os
+import pdb
 import math
 import json
 import logging
@@ -29,9 +30,11 @@ def prepare_dirs_and_logger(config):
             else:
                 config.model_name = "{}_{}".format(config.dataset, config.load_path)
     else:
-        #config.model_name = "{}_{}".format(config.dataset, get_time())
         # TODO: Should include all typical settings.
-        config.model_name = "{}".format(config.tag)
+        if config.tag.startswith('test'):
+            config.model_name = "{}".format(config.tag)
+        else:
+            config.model_name = "time_{}_{}".format(config.tag, get_time())
 
     if not hasattr(config, 'model_dir'):
         config.model_dir = os.path.join(config.log_dir, config.model_name)
