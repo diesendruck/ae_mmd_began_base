@@ -319,10 +319,10 @@ class Trainer(object):
         # BEGAN-style control.
         self.balance = self.ae_loss_real - self.ae_loss_fake
         with tf.control_dependencies([self.d_optim, self.g_optim]):
-            self.k_update = tf.assign(
-                self.k_t,
-                tf.clip_by_value(self.k_t - 0.1 * self.balance, 0, 500))
-            #self.k_update = tf.assign(self.k_t, 0)
+            #self.k_update = tf.assign(
+            #    self.k_t,
+            #    tf.clip_by_value(self.k_t - 0.1 * self.balance, 0, 500))
+            self.k_update = tf.assign(self.k_t, 0)
 
         self.summary_op = tf.summary.merge([
             tf.summary.image("a_g", self.g, max_outputs=9),
