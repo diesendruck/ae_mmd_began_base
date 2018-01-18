@@ -341,11 +341,11 @@ class Trainer(object):
                     tf.clip_by_value(self.k_t - 0.1 * self.balance, 0, 500))
 
         self.summary_op = tf.summary.merge([
-            tf.summary.image("a_g", self.g, max_outputs=9),
-            tf.summary.image("b_AE_g", self.AE_g, max_outputs=9),
+            tf.summary.image("a_g", self.g, max_outputs=10),
+            tf.summary.image("b_AE_g", self.AE_g, max_outputs=10),
             tf.summary.image("c_x", to_nhwc(self.x, self.data_format),
-                max_outputs=9),
-            tf.summary.image("d_AE_x", self.AE_x, max_outputs=9),
+                max_outputs=10),
+            tf.summary.image("d_AE_x", self.AE_x, max_outputs=10),
             tf.summary.scalar("loss/d_loss", self.d_loss),
             tf.summary.scalar("loss/ae_loss_real", self.ae_loss_real),
             tf.summary.scalar("loss/ae_loss_fake", self.ae_loss_fake),
@@ -367,7 +367,7 @@ class Trainer(object):
         self.x_mnist = tf.placeholder(tf.float32, [None, 784])
 
         # Define loss and optimizer
-        self.y_mnist = tf.placeholder(tf.float32, [None, 10])
+        self.y_mnist = tf.placeholder(tf.float32, [None, 2])  # NOTE: experimenting with binary classifier
 
         # Build the graph for the deep net
         self.dropout_pr = tf.placeholder(tf.float32)
@@ -395,23 +395,31 @@ class Trainer(object):
         mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
         for i in range(2000):
             batch = mnist.train.next_batch(64)
+            b0 = batch[0]
+            b1 = batch[1]
+            b1 = np.array(
+                [[1.0, 0.0] if label.tolist().index(1)==0 else [0.0, 1.0]
+                    for label in batch[1]]) 
             if i % 100 == 0:
                 train_accuracy = self.sess.run(self.mnist_classifier_accuracy,
                     feed_dict={
-                        self.x_mnist: batch[0],
-                        self.y_mnist: batch[1],
+                        self.x_mnist: b0,
+                        self.y_mnist: b1,
                         self.dropout_pr: 1.0})
                 print('step %d, training accuracy %g' % (i, train_accuracy))
             self.sess.run(self.train_step,
                 feed_dict={
-                    self.x_mnist: batch[0],
-                    self.y_mnist: batch[1],
+                    self.x_mnist: b0,
+                    self.y_mnist: b1,
                     self.dropout_pr: 0.5})
+        test_labels = np.array(
+            [[1.0, 0.0] if i.tolist().index(1)==0 else [0.0, 1.0]
+                for i in mnist.test.labels])
         print('test accuracy %g' % self.sess.run(
             self.mnist_classifier_accuracy,
                 feed_dict={
                     self.x_mnist: mnist.test.images,
-                    self.y_mnist: mnist.test.labels,
+                    self.y_mnist: test_labels,
                     self.dropout_pr: 1.0}))
         # END mnist classifier.
         #######################################################################
@@ -504,7 +512,7 @@ class Trainer(object):
 
                 # Run full training step on pre-fetched data and simulations.
                 if step % 500 == 0:
-                    for _ in range(100):
+                    for _ in range(0):
                         self.sess.run(self.d_optim,
                             feed_dict={
                                 self.dropout_pr: 1.0,

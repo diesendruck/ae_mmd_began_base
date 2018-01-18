@@ -12,6 +12,11 @@ def GeneratorCNN(z, num_filters, channels_out, repeat_num, data_format, reuse):
         x = reshape(x, 7, 7, num_filters, data_format)
         
         for idx in range(repeat_num):
+            # NOTE: Following two lines originally listed twice -- now four times.
+            x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
+                            data_format=data_format)
+            x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
+                            data_format=data_format)
             x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
                             data_format=data_format)
             x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
@@ -37,8 +42,7 @@ def AutoencoderCNN(x, input_channel, z_num, repeat_num, num_filters,
         prev_channel_num = num_filters
         for idx in range(repeat_num):
             channel_num = num_filters * (idx + 1)
-            x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu,
-                            data_format=data_format)
+            # NOTE: The following two lines were originally doubled up.
             x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu,
                             data_format=data_format)
             if idx < repeat_num - 1:
@@ -57,8 +61,7 @@ def AutoencoderCNN(x, input_channel, z_num, repeat_num, num_filters,
         x = reshape(x, 7, 7, num_filters, data_format)
         
         for idx in range(repeat_num):
-            x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
-                            data_format=data_format)
+            # NOTE: The following two lines were originally doubled up.
             x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
                             data_format=data_format)
             if idx < repeat_num - 1:
@@ -279,8 +282,8 @@ def mnistCNN(x, dropout_pr):
 
   # Map the 1024 features to 10 classes, one for each digit
   with tf.name_scope('fc2'):
-    W_fc2 = weight_variable([1024, 10])
-    b_fc2 = bias_variable([10])
+    W_fc2 = weight_variable([1024, 2])  # NOTE: Experimenting with binary classifier.
+    b_fc2 = bias_variable([2])
 
     y_logits = tf.matmul(h_fc1_drop, W_fc2) + b_fc2
     y_probs = tf.nn.softmax(y_logits)
