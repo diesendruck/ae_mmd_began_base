@@ -17,7 +17,7 @@ net_arg = add_argument_group('Network')
 net_arg.add_argument('--scale_size', type=int, default=32, choices=[32, 64],
     help=('input image will be resized with the given value '
         'as width and height'))
-net_arg.add_argument('--num_conv_filters', type=int, default=8,
+net_arg.add_argument('--num_conv_filters', type=int, default=16,
     choices=[2, 4, 6, 8, 16, 32, 64, 128],
     help='n in the paper')
 net_arg.add_argument('--z_dim', type=int, default=16,
@@ -41,10 +41,10 @@ train_arg = add_argument_group('Training')
 train_arg.add_argument('--is_train', type=str2bool, default=True)
 train_arg.add_argument('--optimizer', type=str, default='rmsprop')
 train_arg.add_argument('--max_step', type=int, default=200000)
-train_arg.add_argument('--lr_update_step', type=int, default=10000)
+train_arg.add_argument('--lr_update_step', type=int, default=20000)
 train_arg.add_argument('--d_lr', type=float, default=0.0001)
 train_arg.add_argument('--g_lr', type=float, default=0.0001)
-train_arg.add_argument('--lr_lower_boundary', type=float, default=1e-8)
+train_arg.add_argument('--lr_lower_boundary', type=float, default=1e-6)
 train_arg.add_argument('--use_gpu', type=str2bool, default=True)
 train_arg.add_argument('--use_mmd', type=str2bool, default=True)
 train_arg.add_argument('--lambda_mmd_setting', type=float, default=500.0)
