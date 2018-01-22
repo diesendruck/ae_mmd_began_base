@@ -192,15 +192,15 @@ class Trainer(object):
         # Set up mnist classification, and get probabilities of keeping.
         self.build_mnist_classifier()
 
-        # Set up "READ-ONLY" computation of proportions.
-        """
-        self.ex = tf.placeholder(tf.float32, name='t',
+        # READ-ONLY PART 1: From arbitrary input.
+        self.example = tf.placeholder(tf.float32, name='example',
             shape=[None, self.channel, self.scale_size, self.scale_size])
         _, label_pred_pr, _ = (
-            mnistCNN(tf.reshape(self.ex, [-1, 784]), dropout_pr=1.0, reuse=True))
-        self.ex_pr0 = label_pred_pr[:, 0]  # Probability zero.
-        self.ex_prop0 = tf.reduce_mean(tf.round(self.ex_pr0))  # Proportion classified zero.
-        """
+            mnistCNN(tf.reshape(convert_n11_to_01(self.example), [-1, 784]), dropout_pr=1.0, reuse=True))
+        self.example_pr0 = label_pred_pr[:, 0]  # Probability zero.
+        self.example_prop0 = tf.reduce_mean(tf.round(self.example_pr0))  # Proportion classified zero.
+
+        # READ-ONLY PART 2: From existing graph nodes.
         read_ae, read_enc, _, _ = AutoencoderCNN(
             tf.concat([self.c, self.x, self.t, self.g], 0), self.channel,
             self.z_dim, self.repeat_num, self.num_conv_filters,
