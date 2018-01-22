@@ -474,7 +474,8 @@ class Trainer(object):
             test_classifier_on_pixels = 1
             if test_classifier_on_pixels:
                 c, c_label = self.get_mnist_images_and_labels(self.batch_size, split='classifier')
-                _, acc, cprop0 = self.sess.run([self.c_optim, self.mnist_classifier_accuracy, self.c_prop0],
+                _, acc, cprop0 = self.sess.run([
+                        self.c_optim, self.mnist_classifier_accuracy, self.read_c_prop0],
                     feed_dict={
                         self.c: c,
                         self.c_label: c_label})
@@ -482,15 +483,15 @@ class Trainer(object):
                 c, _ = self.get_mnist_images_and_labels(self.batch_size, split='classifier')
                 x, _ = self.get_mnist_images_and_labels(self.batch_size, split='train')
                 t, _ = self.get_mnist_images_and_labels(self.batch_size, split='test')
-                ex_c_prop0 = self.sess.run(self.ex_prop0,
+                ex_c_prop0 = self.sess.run(self.example_prop0,
                     feed_dict={
-                        self.ex: c})
-                ex_x_prop0 = self.sess.run(self.ex_prop0,
+                        self.example: c})
+                ex_x_prop0 = self.sess.run(self.example_prop0,
                     feed_dict={
-                        self.ex: x})
-                ex_t_prop0 = self.sess.run(self.ex_prop0,
+                        self.example: x})
+                ex_t_prop0 = self.sess.run(self.example_prop0,
                     feed_dict={
-                        self.ex: t})
+                        self.example: t})
                 if step % 500 == 0:
                     print('\n\nACC: {}, cprop0: {}, ex_c_prop0: {}, ex_x_prop0: {}, ex_t_prop0: {}\n\n'.format(
                         acc, cprop0, ex_c_prop0, ex_x_prop0, ex_t_prop0))
