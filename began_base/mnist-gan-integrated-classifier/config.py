@@ -36,7 +36,7 @@ data_arg.add_argument('--num_worker', type=int, default=4)
 data_arg.add_argument('--target_num', type=int, default=0,
                       choices=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
                       help=('MNIST number that is underrepresented'))
-data_arg.add_argument('--train_mix', type=str, default='2080')
+data_arg.add_argument('--x_mix', type=str, default='2080')
 
 # Training / test parameters
 train_arg = add_argument_group('Training')
@@ -51,6 +51,10 @@ train_arg.add_argument('--use_gpu', type=str2bool, default=True)
 train_arg.add_argument('--use_mmd', type=str2bool, default=True)
 train_arg.add_argument('--lambda_mmd_setting', type=float, default=100.0)
 train_arg.add_argument('--weighted', type=str2bool, default=True)
+train_arg.add_argument('--clip_c_optim', type=str2bool, default=False)
+train_arg.add_argument('--clip_ae_encoder', type=str2bool, default=True)
+train_arg.add_argument('--mmd_on_encodings', type=str2bool, default=True)
+train_arg.add_argument('--classify_on_pixels', type=str2bool, default=False)
 
 # Misc
 misc_arg = add_argument_group('Misc')
