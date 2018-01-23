@@ -228,66 +228,69 @@ def upscale(x, scale, data_format):
 # https://github.com/tensorflow/tensorflow/blob/r1.4/tensorflow/examples/
 #   tutorials/mnist/mnist_deep.py
 def mnistCNN(x, dropout_pr):
-  """mnistCNN builds the graph for a deep net for classifying digits.
-  Args:
-    x: an input tensor with the dimensions (N_examples, 784), where 784 is the
-    number of pixels in a standard MNIST image.
-    dropout_pr: tf.float32 indicating the keeping rate for dropout.
-  Returns:
-    y_logits: Tensor of shape (N_examples, 10), with values equal to the logits
-      of classifying the digit into one of 10 classes (the digits 0-9). 
-    y_probs: Tensor of shape (N_examples, 10), with values
-      equal to the probabilities of classifying the digit into one of 10 classes
-      (the digits 0-9). 
-  """
-  # Reshape to use within a convolutional neural net.
-  # Last dimension is for "features" - there is only one here, since images are
-  # grayscale -- it would be 3 for an RGB image, 4 for RGBA, etc.
-  with tf.name_scope('reshape'):
-    x_image = tf.reshape(x, [-1, 28, 28, 1])
+    """mnistCNN builds the graph for a deep net for classifying digits.
+    Args:
+      x: an input tensor with the dimensions (N_examples, 784), where 784 is the
+      number of pixels in a standard MNIST image.
+      dropout_pr: tf.float32 indicating the keeping rate for dropout.
+    Returns:
+      y_logits: Tensor of shape (N_examples, 10), with values equal to the logits
+        of classifying the digit into one of 10 classes (the digits 0-9). 
+      y_probs: Tensor of shape (N_examples, 10), with values
+        equal to the probabilities of classifying the digit into one of 10 classes
+        (the digits 0-9). 
+    """
+    # Reshape to use within a convolutional neural net.
+    # Last dimension is for "features" - there is only one here, since images are
+    # grayscale -- it would be 3 for an RGB image, 4 for RGBA, etc.
+    with tf.variable_scope('mnistCNN') as vs:
+        with tf.name_scope('reshape'):
+            x_image = tf.reshape(x, [-1, 28, 28, 1])
 
-  # First convolutional layer - maps one grayscale image to 32 feature maps.
-  with tf.name_scope('conv1'):
-    W_conv1 = weight_variable([5, 5, 1, 32])
-    b_conv1 = bias_variable([32])
-    h_conv1 = tf.nn.relu(conv2d(x_image, W_conv1) + b_conv1)
+        # First convolutional layer - maps one grayscale image to 32 feature maps.
+        with tf.name_scope('conv1'):
+            W_conv1 = weight_variable([5, 5, 1, 32])
+            b_conv1 = bias_variable([32])
+            h_conv1 = tf.nn.relu(conv2d(x_image, W_conv1) + b_conv1)
 
-  # Pooling layer - downsamples by 2X.
-  with tf.name_scope('pool1'):
-    h_pool1 = max_pool_2x2(h_conv1)
+        # Pooling layer - downsamples by 2X.
+        with tf.name_scope('pool1'):
+            h_pool1 = max_pool_2x2(h_conv1)
 
-  # Second convolutional layer -- maps 32 feature maps to 64.
-  with tf.name_scope('conv2'):
-    W_conv2 = weight_variable([5, 5, 32, 64])
-    b_conv2 = bias_variable([64])
-    h_conv2 = tf.nn.relu(conv2d(h_pool1, W_conv2) + b_conv2)
+        # Second convolutional layer -- maps 32 feature maps to 64.
+        with tf.name_scope('conv2'):
+            W_conv2 = weight_variable([5, 5, 32, 64])
+            b_conv2 = bias_variable([64])
+            h_conv2 = tf.nn.relu(conv2d(h_pool1, W_conv2) + b_conv2)
 
-  # Second pooling layer.
-  with tf.name_scope('pool2'):
-    h_pool2 = max_pool_2x2(h_conv2)
+        # Second pooling layer.
+        with tf.name_scope('pool2'):
+            h_pool2 = max_pool_2x2(h_conv2)
 
-  # Fully connected layer 1 -- after 2 round of downsampling, our 28x28 image
-  # is down to 7x7x64 feature maps -- maps this to 1024 features.
-  with tf.name_scope('fc1'):
-    W_fc1 = weight_variable([7 * 7 * 64, 1024])
-    b_fc1 = bias_variable([1024])
+        # Fully connected layer 1 -- after 2 round of downsampling, our 28x28 image
+        # is down to 7x7x64 feature maps -- maps this to 1024 features.
+        with tf.name_scope('fc1'):
+            W_fc1 = weight_variable([7 * 7 * 64, 1024])
+            b_fc1 = bias_variable([1024])
 
-    h_pool2_flat = tf.reshape(h_pool2, [-1, 7*7*64])
-    h_fc1 = tf.nn.relu(tf.matmul(h_pool2_flat, W_fc1) + b_fc1)
+            h_pool2_flat = tf.reshape(h_pool2, [-1, 7*7*64])
+            h_fc1 = tf.nn.relu(tf.matmul(h_pool2_flat, W_fc1) + b_fc1)
 
-  # Dropout - controls the complexity of the model, prevents co-adaptation of
-  # features.
-  with tf.name_scope('dropout'):
-    h_fc1_drop = tf.nn.dropout(h_fc1, dropout_pr)
+        # Dropout - controls the complexity of the model, prevents co-adaptation of
+        # features.
+        with tf.name_scope('dropout'):
+            h_fc1_drop = tf.nn.dropout(h_fc1, dropout_pr)
 
-  # Map the 1024 features to 10 classes, one for each digit
-  with tf.name_scope('fc2'):
-    W_fc2 = weight_variable([1024, 2])  # NOTE: Experimenting with binary classifier.
-    b_fc2 = bias_variable([2])
+        # Map the 1024 features to 10 classes, one for each digit
+        with tf.name_scope('fc2'):
+            W_fc2 = weight_variable([1024, 2])
+            b_fc2 = bias_variable([2])
 
-    y_logits = tf.matmul(h_fc1_drop, W_fc2) + b_fc2
-    y_probs = tf.nn.softmax(y_logits)
-  return y_logits, y_probs
+        y_logits = tf.matmul(h_fc1_drop, W_fc2) + b_fc2
+        y_probs = tf.nn.softmax(y_logits)
+
+    variables = tf.contrib.framework.get_variables(vs)
+    return y_logits, y_probs, variables
 
 
 def conv2d(x, W):
@@ -314,3 +317,31 @@ def bias_variable(shape):
 
 # END section from Tensorflow website.
 ###############################################################################
+
+
+def mnist_enc_NN(x, dropout_pr, reuse):
+    """mnist_enc_NN builds the graph for a deep net for classifying digits.
+    Args:
+      x: an input tensor with the dimensions (N_examples, z_dim), where z_dim is the
+      number of encoding dimension.
+      dropout_pr: tf.float32 indicating the keeping rate for dropout.
+    Returns:
+      y_logits: Tensor of shape (N_examples, 2), with values equal to the logits
+        of classifying the digit into zero/nonzero.
+      y_probs: Tensor of shape (N_examples, 2), with values
+        equal to the probabilities of classifying the digit into zero/nonzero.
+    """
+    with tf.variable_scope('mnist_classifier', reuse=reuse) as vs:
+        fc_dim = 1
+        W_fc1 = weight_variable([16, fc_dim])
+        b_fc1 = bias_variable([fc_dim])
+        h_fc1 = tf.nn.relu(tf.matmul(x, W_fc1) + b_fc1)
+        h_fc1_drop = tf.nn.dropout(h_fc1, dropout_pr)
+        W_fc2 = weight_variable([fc_dim, 2])
+        b_fc2 = bias_variable([2])
+
+        y_logits = tf.matmul(h_fc1_drop, W_fc2) + b_fc2
+        y_probs = tf.nn.softmax(y_logits)
+
+    variables = tf.contrib.framework.get_variables(vs)
+    return y_logits, y_probs, variables
