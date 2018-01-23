@@ -49,7 +49,6 @@ train_arg.add_argument('--use_gpu', type=str2bool, default=True)
 train_arg.add_argument('--use_mmd', type=str2bool, default=True)
 train_arg.add_argument('--lambda_mmd_setting', type=float, default=500.0)
 train_arg.add_argument('--weighted', type=str2bool, default=True)
-train_arg.add_argument('--do_k_update', type=str2bool, default=False)
 
 # Misc
 misc_arg = add_argument_group('Misc')
