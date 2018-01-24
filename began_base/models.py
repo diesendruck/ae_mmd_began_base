@@ -334,11 +334,11 @@ def mnist_enc_NN(x, dropout_pr, reuse):
     z_dim = x.get_shape().as_list()[1]
     with tf.variable_scope('mnist_classifier', reuse=reuse) as vs:
         x = slim.fully_connected(x, 1024, activation_fn=tf.nn.elu, scope='fc1')
-        x = slim.dropout(x, 0.5, scope='drop1')
+        x = slim.dropout(x, dropout_pr, scope='drop1')
         x = slim.fully_connected(x, 1024, activation_fn=tf.nn.elu, scope='fc2')
-        x = slim.dropout(x, 0.5, scope='drop2')
+        x = slim.dropout(x, dropout_pr, scope='drop2')
         x = slim.fully_connected(x, 32, activation_fn=tf.nn.elu, scope='fc3')
-        x = slim.dropout(x, 0.5, scope='drop3')
+        x = slim.dropout(x, dropout_pr, scope='drop3')
         y_logits = slim.fully_connected(x, 2, activation_fn=None, scope='fc4')
         y_probs = tf.nn.softmax(y_logits)
 
