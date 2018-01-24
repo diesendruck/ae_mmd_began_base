@@ -344,19 +344,17 @@ class Trainer(object):
             tf.summary.scalar("loss/d_loss", self.d_loss),
             tf.summary.scalar("loss/ae_loss_real", self.ae_loss_real),
             tf.summary.scalar("loss/ae_loss_fake", self.ae_loss_fake),
-            tf.summary.scalar("loss/mmd", self.mmd),
             tf.summary.scalar("loss/mmd_u", self.mmd_unweighted),
             tf.summary.scalar("loss/mmd_w", self.mmd_weighted),
-            tf.summary.scalar("loss/first_moment", self.first_moment_loss),
             tf.summary.scalar("misc/d_lr", self.d_lr),
             tf.summary.scalar("misc/g_lr", self.g_lr),
             tf.summary.scalar("prop/x_prop0", self.x_prop0),
             tf.summary.scalar("prop/g_prop0", self.g_prop0),
-            tf.summary.scalar("prop/x_prop0_pix", self.x_prop0_pix),
-            tf.summary.scalar("prop/g_prop0_pix", self.g_prop0_pix),
+            tf.summary.scalar("prop/x_prop0_pix_reference", self.x_prop0_pix),
+            tf.summary.scalar("prop/g_prop0_pix_reference", self.g_prop0_pix),
             tf.summary.scalar("prop/classifier_accuracy_test",
                 self.classifier_accuracy_test),
-            tf.summary.scalar("prop/classifier_accuracy_test_pix",
+            tf.summary.scalar("prop/classifier_accuracy_test_pix_reference",
                 self.classifier_accuracy_test_pix),
         ])
 
@@ -433,40 +431,47 @@ class Trainer(object):
         x_fixed = self.get_images_from_loader()
         save_image(x_fixed, '{}/x_fixed.png'.format(self.model_dir))
         # Use tensorflow tutorial set for conveniently labeled mnist.
-        mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
+        self.mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
+        self.c_images_reference, self.c_labels_reference = self.prep_01_data(
+            split='classifier', mix='5050', n=800)
+        self.c_images_user, self.c_labels_user = self.prep_01_data(
+            split='classifier', mix='5050', n=20)
+        self.c_images_test, self.c_labels_test = self.prep_01_data(
+            split='test', mix='5050', n=1800)
 
         # Train generator.
         for step in trange(self.start_step, self.max_step):
             # First do classifier updates.
-            # NOTE: Using "validation" only because it's smaller, than "train".
-            batch = mnist.validation.next_batch(self.batch_size)
-            b0 = batch[0]
-            b1 = batch[1]
-            b1 = np.array(
-                [[1.0, 0.0] if label.tolist().index(1)==0 else [0.0, 1.0]
-                    for label in batch[1]]) 
-            self.sess.run([self.c_optim, self.c_optim_pix],
+            batch_user = self.get_n_images_and_labels(
+                self.batch_size, self.c_images_user, self.c_labels_user)
+            batch_reference = self.get_n_images_and_labels(
+                self.batch_size, self.c_images_reference, self.c_labels_reference)
+
+            self.sess.run(self.c_optim,
                 feed_dict={
-                    self.c_images_01: b0,
-                    self.c_labels: b1,
+                    self.c_images_01: batch_user[0],
+                    self.c_labels: batch_user[1],
                     self.dropout_pr: 0.5})
+            self.sess.run(self.c_optim_pix,
+                feed_dict={
+                    self.c_images_01: batch_reference[0],
+                    self.c_labels: batch_reference[1],
+                    self.dropout_pr: 0.5})
+
             if step % self.log_step == 0:
                 train_acc, train_acc_pix = self.sess.run([
                         self.classifier_accuracy,
                         self.classifier_accuracy_pix],
                     feed_dict={
-                        self.c_images_01: b0,
-                        self.c_labels: b1,
+                        self.c_images_01: batch_user[0],
+                        self.c_labels: batch_user[1],
                         self.dropout_pr: 1.0})
-                test_labels = np.array(
-                    [[1.0, 0.0] if i.tolist().index(1)==0 else [0.0, 1.0]
-                        for i in mnist.test.labels])
                 test_acc, test_acc_pix = self.sess.run([
                         self.classifier_accuracy,
                         self.classifier_accuracy_pix],
                     feed_dict={
-                        self.c_images_01: mnist.test.images,
-                        self.c_labels: test_labels,
+                        self.c_images_01: self.c_images_test,
+                        self.c_labels: self.c_labels_test,
                         self.dropout_pr: 1.0})
                 print('\nstep {},\ntrain/test acc {:.4f}/{:.4f}'
                       '\ntrain/test acc_pix {:.4f}/{:.4f}'.format(
@@ -482,7 +487,6 @@ class Trainer(object):
                     'summary': self.summary_op,
                     'ae_loss_real': self.ae_loss_real,
                     'ae_loss_fake': self.ae_loss_fake,
-                    'first_moment_loss': self.first_moment_loss,
                     'mmd': self.mmd,
                     'keeping_probs': self.keeping_probs,
                 })
@@ -548,12 +552,10 @@ class Trainer(object):
                 self.summary_writer.flush()
                 ae_loss_real = result['ae_loss_real']
                 ae_loss_fake = result['ae_loss_fake']
-                first_moment_loss = result['first_moment_loss']
                 mmd = result['mmd']
                 print(('[{}/{}] LOSSES: ae_real/fake: {:.6f}, {:.6f} '
-                    'fm: {:.6f} mmd: {:.6f}').format(
-                        step, self.max_step, ae_loss_real, ae_loss_fake,
-                        first_moment_loss, mmd))
+                    'mmd: {:.6f}').format(
+                        step, self.max_step, ae_loss_real, ae_loss_fake, mmd))
             if step % (self.save_step) == 0:
                 z = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
                 gen_rand = self.generate(
@@ -588,3 +590,60 @@ class Trainer(object):
         if self.data_format == 'NCHW':
             x = x.transpose([0, 2, 3, 1])
         return x
+
+
+    def prep_01_data(self, split='classifier', mix='5050', n=100):
+        # Ensure that training mix has zero as target.
+        prop0 = int(mix[:2])
+        prop1 = int(mix[2:])
+        self.config.pct = [prop0, prop1]
+        n0 = int(n * prop0 / 100.)
+        n1 = int(n * prop1 / 100.)
+
+        def pct(mix):
+            amts = [int(mix[:2]), int(mix[2:])]
+            pct = float(min(amts)) / max(amts)
+            return pct
+
+        def fetch_01_and_prep(zipped_images_and_labels, percent):
+            # Fetch 01s and apportion according to mix percent.
+            d = zipped_images_and_labels
+            zero_ind = [i for i,v in enumerate(d) if v[1][0] == 1]
+            one_ind = [i for i,v in enumerate(d) if v[1][1] == 1]
+            assert n0 <= len(zero_ind) and n1 <= len(one_ind), (
+                'Asking for {} zeros and {} ones, but have {} zeros and {} ones'
+                ).format(n0, n1, len(zero_ind), len(one_ind))
+            zero_ind = zero_ind[:n0]
+            one_ind = one_ind[:n1]
+            eligible_indices = np.concatenate((zero_ind, one_ind))
+            d_01 = [v for i,v in enumerate(d) if i in eligible_indices]
+            d_01 = np.random.permutation(d_01)  # Shuffle for random sampling.
+            images = [v[0] for v in d_01]
+            labels = [v[1] for v in d_01]
+
+            # Reshape, rescale, recode.
+            #images = np.reshape(images,
+            #    [len(images), self.channel, self.scale_size, self.scale_size])
+            images = np.reshape(images, [len(images), -1])  # [n, 784]
+            #images = convert_01_to_n11(images)
+            labels = [[1.0, 0.0] if i.tolist().index(1) == 0 else [0.0, 1.0]
+                for i in labels]
+            return np.array(images), np.array(labels)
+
+        m = self.mnist
+        if split == 'classifier':
+            imgs_and_labs = zip(m.validation.images, m.validation.labels)
+            images, labels = fetch_01_and_prep(imgs_and_labs, pct(mix))
+        elif split == 'test':
+            imgs_and_labs = zip(m.test.images, m.test.labels)
+            images, labels = fetch_01_and_prep(imgs_and_labs, pct(mix))
+
+        return images, labels
+
+
+    def get_n_images_and_labels(self, n, images, labels):
+        assert n <= len(images), 'n must be less than length of image set'
+        n_random_indices = np.random.choice(range(len(images)), n, replace=False)
+        n_images = [v for i,v in enumerate(images) if i in n_random_indices]
+        n_labels = [v for i,v in enumerate(labels) if i in n_random_indices]
+        return np.array(n_images), np.array(n_labels) 
