@@ -48,7 +48,7 @@ train_arg.add_argument('--c_lr', type=float, default=0.0001)
 train_arg.add_argument('--lr_lower_boundary', type=float, default=1e-6)
 train_arg.add_argument('--use_gpu', type=str2bool, default=True)
 train_arg.add_argument('--use_mmd', type=str2bool, default=True)
-train_arg.add_argument('--lambda_mmd_setting', type=float, default=500.0)
+train_arg.add_argument('--lambda_mmd_setting', type=float, default=100.0)
 train_arg.add_argument('--weighted', type=str2bool, default=True)
 
 # Misc
