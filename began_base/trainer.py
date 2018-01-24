@@ -77,14 +77,18 @@ class Trainer(object):
 
         self.step = tf.Variable(0, name='step', trainable=False)
 
-        self.g_lr = tf.Variable(config.g_lr, name='g_lr', trainable=False)
         self.d_lr = tf.Variable(config.d_lr, name='d_lr', trainable=False)
-        self.g_lr_update = tf.assign(
-            self.g_lr, tf.maximum(self.g_lr * 0.5, config.lr_lower_boundary),
-            name='g_lr_update')
+        self.g_lr = tf.Variable(config.g_lr, name='g_lr', trainable=False)
+        self.c_lr = tf.Variable(config.c_lr, name='c_lr', trainable=False)
         self.d_lr_update = tf.assign(
             self.d_lr, tf.maximum(self.d_lr * 0.5, config.lr_lower_boundary),
             name='d_lr_update')
+        self.g_lr_update = tf.assign(
+            self.g_lr, tf.maximum(self.g_lr * 0.5, config.lr_lower_boundary),
+            name='g_lr_update')
+        self.c_lr_update = tf.assign(
+            self.c_lr, tf.maximum(self.c_lr * 0.5, config.lr_lower_boundary),
+            name='c_lr_update')
 
         self.z_dim = config.z_dim
         self.num_conv_filters = config.num_conv_filters
@@ -202,8 +206,12 @@ class Trainer(object):
             trainable=False, name='g_pr0')
         self.x_prop0 = tf.Variable(0., trainable=False, name='x_prop0')
         self.g_prop0 = tf.Variable(0., trainable=False, name='g_prop0')
+        self.x_prop0_pix = tf.Variable(0., trainable=False, name='x_prop0_pix')
+        self.g_prop0_pix = tf.Variable(0., trainable=False, name='g_prop0_pix')
         self.classifier_accuracy_test = tf.Variable(0., trainable=False,
             name='classifier_accuracy_test')
+        self.classifier_accuracy_test_pix = tf.Variable(0., trainable=False,
+            name='classifier_accuracy_test_pix')
         self.x_normed_for_mnist_prediction = (tf.reshape(x,
             [self.batch_size, -1]) + 1.)/ 2.  # Maps [-1, 1] to [0, 1].
         self.g_normed_for_mnist_prediction = (tf.reshape(g,
@@ -344,27 +352,30 @@ class Trainer(object):
             tf.summary.scalar("misc/g_lr", self.g_lr),
             tf.summary.scalar("prop/x_prop0", self.x_prop0),
             tf.summary.scalar("prop/g_prop0", self.g_prop0),
+            tf.summary.scalar("prop/x_prop0_pix", self.x_prop0_pix),
+            tf.summary.scalar("prop/g_prop0_pix", self.g_prop0_pix),
             tf.summary.scalar("prop/classifier_accuracy_test",
                 self.classifier_accuracy_test),
+            tf.summary.scalar("prop/classifier_accuracy_test_pix",
+                self.classifier_accuracy_test_pix),
         ])
 
         
     def build_mnist_classifier(self):
-        # Create the model
+        # Classification data is [0, 1], from TF package.
         self.c_images_01 = tf.placeholder(tf.float32, [None, 784])
-
-        # Define loss and optimizer
         self.c_labels = tf.placeholder(tf.float32, [None, 2])
 
-        # Build the graph for the deep net
+        # Compute the data probabilities used in WMMD.
+        # NOTE: Whatever is chose here is used downstream in the model.
+        #       Other pred/prob/entropy/optims are just for reporting.
         self.dropout_pr = tf.placeholder(tf.float32)
-        classify_on_pixels = 1
+        classify_on_pixels = 0
         if classify_on_pixels:
             self.label_pred, self.label_pred_pr, self.c_vars = mnistCNN(
-                self.c_images_01, self.dropout_pr)
+                self.c_images_01, self.dropout_pr, reuse=False)
             self.label_pred_pr0 = self.label_pred_pr[:, 0]
         else:
-            # TODO: Experiment with classifier on encoding.
             # Convert to [-1, 1] for autoencoder.
             c = tf.reshape(self.c_images_01 * 2. - 1.,
                 [-1, self.channel, self.scale_size, self.scale_size])
@@ -375,29 +386,46 @@ class Trainer(object):
                 c_enc, self.dropout_pr, reuse=False)
             self.label_pred_pr0 = self.label_pred_pr[:, 0]
 
-        with tf.name_scope('loss'):
-            cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
-                labels=self.c_labels, logits=self.label_pred)
-            cross_entropy = tf.reduce_mean(cross_entropy)
+        # Get probs with pixels, for reporting only.
+        self.label_pred_pix, self.label_pred_pr_pix, self.c_vars_pix = mnistCNN(
+            self.c_images_01, self.dropout_pr, reuse=False)
+        self.label_pred_pr0_pix = self.label_pred_pr_pix[:, 0]
 
-        with tf.name_scope('adam_optimizer'):
-            self.c_optim = tf.train.AdamOptimizer(1e-4).minimize(
+        # Define classifier losses.
+        cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
+            labels=self.c_labels, logits=self.label_pred)
+        cross_entropy = tf.reduce_mean(cross_entropy)
+
+        cross_entropy_pix = tf.nn.softmax_cross_entropy_with_logits(
+            labels=self.c_labels, logits=self.label_pred_pix)
+        cross_entropy_pix = tf.reduce_mean(cross_entropy_pix)
+
+        # Define optimization procedure.
+        if 1:
+            self.c_optim = tf.train.RMSPropOptimizer(self.c_lr).minimize(
                 cross_entropy, var_list=self.c_vars)
-            '''
-            optimizer = tf.train.AdamOptimizer(1e-4)
-            grads_and_vars = optimizer.compute_gradients(cross_entropy)
-            for gv in grads_and_vars:
-                print(gv[1].name)
-            pdb.set_trace()
-            self.c_optim = optimizer.apply_gradients(grads_and_vars)
-            '''
 
-        with tf.name_scope('accuracy'):
-            correct_prediction = tf.equal(
-                tf.argmax(self.label_pred, 1), tf.argmax(self.c_labels, 1))
-            correct_prediction = tf.cast(correct_prediction, tf.float32)
-        self.mnist_classifier_accuracy = tf.reduce_mean(correct_prediction)
+            self.c_optim_pix = tf.train.RMSPropOptimizer(self.c_lr).minimize(
+                cross_entropy_pix, var_list=self.c_vars_pix)
+        else:
+            # Same as  above, but with gradient clipping.
+            c_opt = tf.train.AdamOptimizer(self.c_lr)
+            c_gvs = c_opt.compute_gradients(
+                cross_entropy, var_list=self.c_vars)
+            c_capped_gvs = (
+                [(tf.clip_by_value(grad, -0.01, 0.01), var) for grad, var in c_gvs])
+            self.c_optim = c_opt.apply_gradients(c_capped_gvs) 
 
+        # Compute accuracy.
+        correct_prediction = tf.equal(
+            tf.argmax(self.label_pred, 1), tf.argmax(self.c_labels, 1))
+        correct_prediction = tf.cast(correct_prediction, tf.float32)
+        self.classifier_accuracy = tf.reduce_mean(correct_prediction)
+
+        correct_prediction_pix = tf.equal(
+            tf.argmax(self.label_pred_pix, 1), tf.argmax(self.c_labels, 1))
+        correct_prediction_pix = tf.cast(correct_prediction_pix, tf.float32)
+        self.classifier_accuracy_pix = tf.reduce_mean(correct_prediction_pix)
 
     def train(self):
         print('\n{}\n'.format(self.config))
@@ -417,27 +445,32 @@ class Trainer(object):
             b1 = np.array(
                 [[1.0, 0.0] if label.tolist().index(1)==0 else [0.0, 1.0]
                     for label in batch[1]]) 
-            self.sess.run(self.c_optim,
+            self.sess.run([self.c_optim, self.c_optim_pix],
                 feed_dict={
                     self.c_images_01: b0,
                     self.c_labels: b1,
                     self.dropout_pr: 0.5})
             if step % self.log_step == 0:
-                train_accuracy = self.sess.run(self.mnist_classifier_accuracy,
+                train_acc, train_acc_pix = self.sess.run([
+                        self.classifier_accuracy,
+                        self.classifier_accuracy_pix],
                     feed_dict={
                         self.c_images_01: b0,
                         self.c_labels: b1,
                         self.dropout_pr: 1.0})
-                print('\nstep %d, training accuracy %g' % (step, train_accuracy))
                 test_labels = np.array(
                     [[1.0, 0.0] if i.tolist().index(1)==0 else [0.0, 1.0]
                         for i in mnist.test.labels])
-                acc = self.sess.run(self.mnist_classifier_accuracy,
-                        feed_dict={
-                            self.c_images_01: mnist.test.images,
-                            self.c_labels: test_labels,
-                            self.dropout_pr: 1.0})
-                print('test accuracy {}'.format(acc))
+                test_acc, test_acc_pix = self.sess.run([
+                        self.classifier_accuracy,
+                        self.classifier_accuracy_pix],
+                    feed_dict={
+                        self.c_images_01: mnist.test.images,
+                        self.c_labels: test_labels,
+                        self.dropout_pr: 1.0})
+                print('\nstep {},\ntrain/test acc {:.4f}/{:.4f}'
+                      '\ntrain/test acc_pix {:.4f}/{:.4f}'.format(
+                    step, train_acc, test_acc, train_acc_pix, test_acc_pix))
             # Set up basket of items to be run. Occasionally fetch items
             # useful for logging and saving.
             fetch_dict = {
@@ -464,18 +497,28 @@ class Trainer(object):
                 weighted = True 
                 x_ = self.get_images_from_loader().transpose([0, 3, 1, 2])
                 z_ = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
-            # Pre-fetch data and simulations, and compute classifier probs.
+            # Pre-fetch data and simulations, and normalize for classification.
             x_mnistcnn, g_mnistcnn = self.sess.run([
                     self.x_normed_for_mnist_prediction,
                     self.g_normed_for_mnist_prediction],
                 feed_dict={
                     self.x: x_,
                     self.z: z_})
+            # Get probs using encodings.
             x_pred_pr0 = self.sess.run(self.label_pred_pr0,
                 feed_dict={
                     self.c_images_01: x_mnistcnn,
                     self.dropout_pr: 1.0})
             g_pred_pr0 = self.sess.run(self.label_pred_pr0,
+                feed_dict={
+                    self.c_images_01: g_mnistcnn,
+                    self.dropout_pr: 1.0})
+            # Get probs using pixels.
+            x_pred_pr0_pix = self.sess.run(self.label_pred_pr0_pix,
+                feed_dict={
+                    self.c_images_01: x_mnistcnn,
+                    self.dropout_pr: 1.0})
+            g_pred_pr0_pix = self.sess.run(self.label_pred_pr0_pix,
                 feed_dict={
                     self.c_images_01: g_mnistcnn,
                     self.dropout_pr: 1.0})
@@ -489,7 +532,10 @@ class Trainer(object):
                     self.g_pr0: np.reshape(g_pred_pr0, [-1, 1]),
                     self.x_prop0: np.mean(np.round(x_pred_pr0)),
                     self.g_prop0: np.mean(np.round(g_pred_pr0)),
-                    self.classifier_accuracy_test: acc,
+                    self.x_prop0_pix: np.mean(np.round(x_pred_pr0_pix)),
+                    self.g_prop0_pix: np.mean(np.round(g_pred_pr0_pix)),
+                    self.classifier_accuracy_test: test_acc,
+                    self.classifier_accuracy_test_pix: test_acc_pix,
                     self.lambda_mmd: self.lambda_mmd_setting, 
                     self.lambda_ae: 1.0,
                     self.lambda_fm: 0.0,

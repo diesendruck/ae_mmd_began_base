@@ -227,7 +227,7 @@ def upscale(x, scale, data_format):
 # BEGIN section from Tensorflow website. For MNIST classification.
 # https://github.com/tensorflow/tensorflow/blob/r1.4/tensorflow/examples/
 #   tutorials/mnist/mnist_deep.py
-def mnistCNN(x, dropout_pr):
+def mnistCNN(x, dropout_pr, reuse):
     """mnistCNN builds the graph for a deep net for classifying digits.
     Args:
       x: an input tensor with the dimensions (N_examples, 784), where 784 is the
@@ -243,7 +243,7 @@ def mnistCNN(x, dropout_pr):
     # Reshape to use within a convolutional neural net.
     # Last dimension is for "features" - there is only one here, since images are
     # grayscale -- it would be 3 for an RGB image, 4 for RGBA, etc.
-    with tf.variable_scope('mnistCNN') as vs:
+    with tf.variable_scope('mnistCNN', reuse=reuse) as vs:
         with tf.name_scope('reshape'):
             x_image = tf.reshape(x, [-1, 28, 28, 1])
 
@@ -331,17 +331,35 @@ def mnist_enc_NN(x, dropout_pr, reuse):
       y_probs: Tensor of shape (N_examples, 2), with values
         equal to the probabilities of classifying the digit into zero/nonzero.
     """
+    z_dim = x.get_shape().as_list()[1]
     with tf.variable_scope('mnist_classifier', reuse=reuse) as vs:
-        fc_dim = 1
-        W_fc1 = weight_variable([16, fc_dim])
+        x = slim.fully_connected(x, 1024, activation_fn=tf.nn.elu, scope='fc1')
+        x = slim.dropout(x, 0.5, scope='drop1')
+        x = slim.fully_connected(x, 1024, activation_fn=tf.nn.elu, scope='fc2')
+        x = slim.dropout(x, 0.5, scope='drop2')
+        x = slim.fully_connected(x, 32, activation_fn=tf.nn.elu, scope='fc3')
+        x = slim.dropout(x, 0.5, scope='drop3')
+        y_logits = slim.fully_connected(x, 2, activation_fn=None, scope='fc4')
+        y_probs = tf.nn.softmax(y_logits)
+
+        '''
+        fc_dim = 1024
+        W_fc1 = weight_variable([z_dim, fc_dim])
         b_fc1 = bias_variable([fc_dim])
         h_fc1 = tf.nn.relu(tf.matmul(x, W_fc1) + b_fc1)
         h_fc1_drop = tf.nn.dropout(h_fc1, dropout_pr)
-        W_fc2 = weight_variable([fc_dim, 2])
-        b_fc2 = bias_variable([2])
 
-        y_logits = tf.matmul(h_fc1_drop, W_fc2) + b_fc2
+        W_fc2 = weight_variable([fc_dim, fc_dim])
+        b_fc2 = bias_variable([fc_dim])
+        h_fc2 = tf.nn.relu(tf.matmul(h_fc1_drop, W_fc2) + b_fc2)
+        h_fc2_drop = tf.nn.dropout(h_fc2, dropout_pr)
+
+        W_fc3 = weight_variable([fc_dim, 2])
+        b_fc3 = bias_variable([2])
+
+        y_logits = tf.matmul(h_fc2_drop, W_fc3) + b_fc3
         y_probs = tf.nn.softmax(y_logits)
+        '''
 
     variables = tf.contrib.framework.get_variables(vs)
     return y_logits, y_probs, variables
