@@ -433,9 +433,9 @@ class Trainer(object):
         # Use tensorflow tutorial set for conveniently labeled mnist.
         self.mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
         self.c_images_reference, self.c_labels_reference = self.prep_01_data(
-            split='classifier', mix='5050', n=800)
+            split='train', mix='5050', n=8000)
         self.c_images_user, self.c_labels_user = self.prep_01_data(
-            split='classifier', mix='5050', n=20)
+            split='classifier', mix='5050', n=100)
         self.c_images_test, self.c_labels_test = self.prep_01_data(
             split='test', mix='5050', n=1800)
 
@@ -459,7 +459,7 @@ class Trainer(object):
                     self.dropout_pr: 0.5})
 
             if step % self.log_step == 0:
-                train_acc, train_acc_pix = self.sess.run([
+                user_acc, user_acc_pix = self.sess.run([
                         self.classifier_accuracy,
                         self.classifier_accuracy_pix],
                     feed_dict={
@@ -473,9 +473,9 @@ class Trainer(object):
                         self.c_images_01: self.c_images_test,
                         self.c_labels: self.c_labels_test,
                         self.dropout_pr: 1.0})
-                print('\nstep {},\ntrain/test acc {:.4f}/{:.4f}'
-                      '\ntrain/test acc_pix {:.4f}/{:.4f}'.format(
-                    step, train_acc, test_acc, train_acc_pix, test_acc_pix))
+                print('\nstep {},\nuser/test acc {:.4f}/{:.4f}'
+                      '\nuser/test acc_pix {:.4f}/{:.4f}'.format(
+                    step, user_acc, test_acc, user_acc_pix, test_acc_pix))
             # Set up basket of items to be run. Occasionally fetch items
             # useful for logging and saving.
             fetch_dict = {
@@ -636,6 +636,9 @@ class Trainer(object):
             images, labels = fetch_01_and_prep(imgs_and_labs, pct(mix))
         elif split == 'test':
             imgs_and_labs = zip(m.test.images, m.test.labels)
+            images, labels = fetch_01_and_prep(imgs_and_labs, pct(mix))
+        elif split == 'train':
+            imgs_and_labs = zip(m.train.images, m.train.labels)
             images, labels = fetch_01_and_prep(imgs_and_labs, pct(mix))
 
         return images, labels
