@@ -48,7 +48,7 @@ def get_loader(root, batch_size, scale_size, data_format, split_name=None,
         imq = tf.RandomShuffleQueue(capacity=60, min_after_dequeue=30, dtypes=[tf.float32, tf.float32],
                                     shapes=[[128, 128, 3], [2]])
         imq_enq_op = imq.enqueue([image, image_labels])
-        imgs, img_lbls = imq.dequeue_many(batch_size)
+        imgs, img_lbls = imq.dequeue_many(64)
         imgs = tf.image.resize_nearest_neighbor(imgs, size=[scale_size, scale_size])
         imgs = tf.subtract(1., tf.divide(imgs, 255.5))
         qr_f = tf.train.QueueRunner(fnq, [fnq_enq_op] * 3)

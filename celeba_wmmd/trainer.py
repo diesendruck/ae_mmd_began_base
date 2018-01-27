@@ -103,7 +103,6 @@ class Trainer(object):
         self.num_conv_filters = config.num_conv_filters
         self.scale_size = config.scale_size
 
-        self.model_dir = config.model_dir
         self.load_path = config.load_path
 
         self.use_gpu = config.use_gpu
@@ -122,10 +121,12 @@ class Trainer(object):
 
         self.is_train = config.is_train
         self.build_model()
+        init_op = tf.global_variables_initializer()
 
         self.saver = tf.train.Saver()
-        self.summary_writer = tf.summary.FileWriter(self.model_dir)
 
+        self.model_dir = config.model_dir
+        self.summary_writer = tf.summary.FileWriter(self.model_dir)
         sv = tf.train.Supervisor(logdir=self.model_dir,
                                 is_chief=True,
                                 saver=self.saver,
@@ -143,13 +144,15 @@ class Trainer(object):
 
         if config.dataset == 'celeba':
             sv.start_standard_services(self.sess)
-            coord = tf.train.Coordinator()
+            #coord = tf.train.Coordinator()
+            coord = sv.coord
             user_qr_f.create_threads(self.sess, coord=coord, start=True)
             user_qr_i.create_threads(self.sess, coord=coord, start=True)
             train_qr_f.create_threads(self.sess, coord=coord, start=True)
             train_qr_f.create_threads(self.sess, coord=coord, start=True)
             test_qr_i.create_threads(self.sess, coord=coord, start=True)
             test_qr_i.create_threads(self.sess, coord=coord, start=True)
+            self.sess.run(init_op)
 
         if not self.is_train:
             # dirty way to bypass graph finilization error
@@ -443,6 +446,7 @@ class Trainer(object):
         # Save a sample.
         sample_imgs, sample_lbls = self.sess.run(
             [self.sample_user, self.sample_user_label])
+        pdb.set_trace()
         imsave('samp0.png', sample_imgs[0].transpose([1, 2, 0]))
         imsave('samp1.png', sample_imgs[1].transpose([1, 2, 0]))
         imsave('samp2.png', sample_imgs[2].transpose([1, 2, 0]))

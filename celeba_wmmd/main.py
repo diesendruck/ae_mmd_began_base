@@ -1,4 +1,5 @@
 import os
+import sys
 import pdb
 import numpy as np
 import tensorflow as tf
@@ -34,7 +35,7 @@ def main(config):
 
     data_loader_user = get_loader(
         data_path, config.batch_size, config.scale_size,
-        config.data_format, split_name=config.split, target='user', n=100)
+        config.data_format, split_name=config.split, target='user', n=500)
     data_loader_train = get_loader(
         data_path, config.batch_size, config.scale_size,
         config.data_format, split_name=config.split, target='train', mix='2080')
