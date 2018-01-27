@@ -219,12 +219,10 @@ class Trainer(object):
             trainable=False, name='g_pr0')
         self.x_prop0 = tf.Variable(0., trainable=False, name='x_prop0')
         self.g_prop0 = tf.Variable(0., trainable=False, name='g_prop0')
-        self.x_prop0_pix = tf.Variable(0., trainable=False, name='x_prop0_pix')
-        self.g_prop0_pix = tf.Variable(0., trainable=False, name='g_prop0_pix')
-        self.classifier_accuracy_test = tf.Variable(0., trainable=False,
-            name='classifier_accuracy_test')
-        self.classifier_accuracy_test_pix = tf.Variable(0., trainable=False,
-            name='classifier_accuracy_test_pix')
+        #self.x_prop0_pix = tf.Variable(0., trainable=False, name='x_prop0_pix')
+        #self.g_prop0_pix = tf.Variable(0., trainable=False, name='g_prop0_pix')
+        #self.classifier_accuracy_test_pix = tf.Variable(0., trainable=False,
+        #    name='classifier_accuracy_test_pix')
         self.x_normed_for_prediction = (tf.reshape(x,
             [self.batch_size, -1]) + 1.)/ 2.  # Maps [-1, 1] to [0, 1].
         self.g_normed_for_prediction = (tf.reshape(g,
@@ -363,12 +361,12 @@ class Trainer(object):
             tf.summary.scalar("misc/g_lr", self.g_lr),
             tf.summary.scalar("prop/x_prop0", self.x_prop0),
             tf.summary.scalar("prop/g_prop0", self.g_prop0),
-            tf.summary.scalar("prop/x_prop0_pix_reference", self.x_prop0_pix),
-            tf.summary.scalar("prop/g_prop0_pix_reference", self.g_prop0_pix),
-            tf.summary.scalar("prop/classifier_accuracy_test",
-                self.classifier_accuracy_test),
-            tf.summary.scalar("prop/classifier_accuracy_test_pix_reference",
-                self.classifier_accuracy_test_pix),
+            #tf.summary.scalar("prop/x_prop0_pix_reference", self.x_prop0_pix),
+            #tf.summary.scalar("prop/g_prop0_pix_reference", self.g_prop0_pix),
+            tf.summary.scalar("prop/classifier_accuracy_user",
+                self.classifier_accuracy),
+            #tf.summary.scalar("prop/classifier_accuracy_test_pix_reference",
+            #    self.classifier_accuracy_test_pix),
         ])
 
         
@@ -442,14 +440,6 @@ class Trainer(object):
         print('\n{}\n'.format(self.config))
         z_fixed = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
 
-        #(self.c_user_images,
-        # self.c_user_labels,
-        # self.c_train_images,
-        # self.c_train_labels) = self.prep_data(split='train', mix='2080', n_user=500)
-        #(self.c_test_images,
-        # self.c_test_labels) = self.prep_data(split='test', mix='5050')
-        #c_test_images_flat = np.array([img_to_flat(i) for i in self.c_test_images])
-
         # Save a sample.
         sample_imgs, sample_lbls = self.sess.run(
             [self.sample_user, self.sample_user_label])
@@ -462,77 +452,23 @@ class Trainer(object):
 
         # Train generator.
         for step in trange(self.start_step, self.max_step):
-            # The "User" batch is for classification only, and is read as a flat
-            # vector.
-            batch_user = self.get_n_images_and_labels(
-                self.batch_size,
-                self.c_user_images,
-                self.c_user_labels)
-            batch_user_flat = np.array([img_to_flat(i) for i in batch_user[0]])
-
-            # The "Train" batch is for classifier testing, and mainly for
-            # autoencoder/wmmd GAN training, where it's an image in NCHW format.
-            batch_train = self.get_n_images_and_labels(
-                self.batch_size,
-                self.c_train_images,
-                self.c_train_labels)
-            batch_train_flat = np.array([img_to_flat(i) for i in batch_train[0]])
-
             # TRAIN CLASSIFIER.
-            self.sess.run(self.c_optim,
-                feed_dict={
-                    self.c_images_flat01: batch_user_flat / 255.,  # Classifier training.
-                    self.c_images: batch_user[0],
-                    self.c_labels: batch_user[1],
-                    self.dropout_pr: 0.5})
+            self.sess.run(self.c_optim, {self.dropout_pr: 0.5})
 
-            self.sess.run(self.c_optim_pix,
-                feed_dict={
-                    self.c_images_flat01: batch_train_flat / 255.,  # Classifier testing.
-                    self.c_images: batch_train[0],
-                    self.c_labels: batch_train[1],
-                    self.dropout_pr: 0.5})
+            #self.sess.run(self.c_optim_pix,
+            #    feed_dict={
+            #        self.c_images_flat01: batch_train_flat / 255.,  # Classifier testing.
+            #        self.c_images: batch_train[0],
+            #        self.c_labels: batch_train[1],
+            #        self.dropout_pr: 0.5})
 
             # Log classifier results.
             if step % self.log_step == 0:
-                user_acc, user_acc_pix = self.sess.run([
-                        self.classifier_accuracy,
-                        self.classifier_accuracy_pix],
-                    feed_dict={
-                        self.c_images_flat01: batch_user_flat / 255.,
-                        self.c_images: batch_user[0],
-                        self.c_labels: batch_user[1],
-                        self.dropout_pr: 1.0})
-                test_acc, test_acc_pix = self.sess.run([
-                        self.classifier_accuracy,
-                        self.classifier_accuracy_pix],
-                    feed_dict={
-                        self.c_images_flat01: c_test_images_flat / 255.,
-                        self.c_images: self.c_test_images,
-                        self.c_labels: self.c_test_labels,
-                        self.dropout_pr: 1.0})
-                print('\nstep {},\nuser/test acc {:.4f}/{:.4f}'
-                      '\nuser/test acc_pix {:.4f}/{:.4f}'.format(
-                    step, user_acc, test_acc, user_acc_pix, test_acc_pix))
+                user_acc = self.sess.run(self.classifier_accuracy, {self.dropout_pr: 1.0})
+                print('\nstep {},\nclassifer_acc on user {:.4f}'.format(step, user_acc))
 
             # TRAIN GAN.
             # Always run optim nodes, and sometimes, some logs.
-            for _ in range(4):
-                weighted = True 
-                z_ = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
-                self.sess.run(self.d_optim,
-                    feed_dict={
-                        self.x: batch_train[0],
-                        self.z: z_,
-                        self.lambda_mmd: self.lambda_mmd_setting, 
-                        self.lambda_ae: 1.0,
-                        self.lambda_fm: 0.0,
-                        self.dropout_pr: 1.0,
-                        self.weighted: weighted})
-                batch_train = self.get_n_images_and_labels(
-                    self.batch_size,
-                    self.c_train_images,
-                    self.c_train_labels)
             fetch_dict = {
                 'd_optim': self.d_optim,
                 'g_optim': self.g_optim,
@@ -546,50 +482,47 @@ class Trainer(object):
                     'keeping_probs': self.keeping_probs,
                 })
 
-            # Train a bit with mmd5050 (target), then switch to wmmd8020.
             weighted = True 
-            z_ = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
+            batch_train, _, _, _ = self.data_loader_train 
+            batch_z = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
             # Pre-fetch data and simulations, and normalize for classification.
-            x_for_pr0, g_for_pr0 = self.sess.run([
-                    self.x_normed_for_prediction,
-                    self.g_normed_for_prediction],
+            x_for_pr0 = batch_train
+            g_for_pr0 = self.sess.run(self.g,
                 feed_dict={
-                    self.x: batch_train[0],
-                    self.z: z_})
+                    self.x: batch_train,
+                    self.z: batch_z})
             # Get probs using encodings.
             x_pred_pr0 = self.sess.run(self.label_pred_pr0,
                 feed_dict={
-                    self.c_images_flat01: x_for_pr0,
-                    self.c_images: batch_train[0],
+                    self.c_images: x_for_pr0,
                     self.dropout_pr: 1.0})
             g_pred_pr0 = self.sess.run(self.label_pred_pr0,
                 feed_dict={
-                    self.c_images_flat01: g_for_pr0,
-                    self.c_images: batch_train[0],
+                    self.c_images: g_for_pr0,
                     self.dropout_pr: 1.0})
             # Get probs using pixels.
-            x_pred_pr0_pix = self.sess.run(self.label_pred_pr0_pix,
-                feed_dict={
-                    self.c_images_flat01: x_for_pr0,
-                    self.dropout_pr: 1.0})
-            g_pred_pr0_pix = self.sess.run(self.label_pred_pr0_pix,
-                feed_dict={
-                    self.c_images_flat01: g_for_pr0,
-                    self.dropout_pr: 1.0})
+            #x_pred_pr0_pix = self.sess.run(self.label_pred_pr0_pix,
+            #    feed_dict={
+            #        self.c_images_flat01: x_for_pr0,
+            #        self.dropout_pr: 1.0})
+            #g_pred_pr0_pix = self.sess.run(self.label_pred_pr0_pix,
+            #    feed_dict={
+            #        self.c_images_flat01: g_for_pr0,
+            #        self.dropout_pr: 1.0})
 
             # Run full training step on pre-fetched data and simulations.
             result = self.sess.run(fetch_dict,
                 feed_dict={
-                    self.x: batch_train[0],
-                    self.z: z_,
+                    self.x: batch_train,
+                    self.z: batch_z,
                     self.x_pr0: np.reshape(x_pred_pr0, [-1, 1]),
                     self.g_pr0: np.reshape(g_pred_pr0, [-1, 1]),
                     self.x_prop0: np.mean(np.round(x_pred_pr0)),
                     self.g_prop0: np.mean(np.round(g_pred_pr0)),
-                    self.x_prop0_pix: np.mean(np.round(x_pred_pr0_pix)),
-                    self.g_prop0_pix: np.mean(np.round(g_pred_pr0_pix)),
-                    self.classifier_accuracy_test: test_acc,
-                    self.classifier_accuracy_test_pix: test_acc_pix,
+                    #self.x_prop0_pix: np.mean(np.round(x_pred_pr0_pix)),
+                    #self.g_prop0_pix: np.mean(np.round(g_pred_pr0_pix)),
+                    self.classifier_accuracy: user_acc,
+                    #self.classifier_accuracy_test_pix: test_acc_pix,
                     self.lambda_mmd: self.lambda_mmd_setting, 
                     self.lambda_ae: 1.0,
                     self.lambda_fm: 0.0,
