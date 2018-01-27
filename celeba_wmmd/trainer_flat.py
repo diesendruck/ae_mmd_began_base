@@ -89,7 +89,7 @@ repeat_num = int(np.log2(scale_size)) - 2
 channel = 3
 
 start_step = 0
-log_step = 10
+log_step = 100
 max_step = 200000
 save_step = 1000
 lr_update_step = 100000
@@ -101,7 +101,7 @@ def img_and_lbl_queue_setup(filenames, labels):
     labels_tensor = tf.constant(labels, dtype=tf.float32)
     
     filenames_tensor = tf.constant(filenames)
-    fnq = tf.RandomShuffleQueue(capacity=200, min_after_dequeue=100, dtypes=tf.string)
+    fnq = tf.RandomShuffleQueue(capacity=6000, min_after_dequeue=5000, dtypes=tf.string)
     fnq_enq_op = fnq.enqueue_many(filenames_tensor)
     filename = fnq.dequeue()
     
@@ -116,7 +116,7 @@ def img_and_lbl_queue_setup(filenames, labels):
     image_index = [tf.cast(tf.string_to_number(tf.substr(flnm, len(data_dir)+1, 6)) - 1, tf.int32)]
     n_labels = 2
     image_labels = tf.reshape(tf.gather(labels_tensor, indices=image_index, axis=0), [n_labels])
-    imq = tf.RandomShuffleQueue(capacity=60, min_after_dequeue=30, dtypes=[tf.float32, tf.float32],
+    imq = tf.RandomShuffleQueue(capacity=6000, min_after_dequeue=5000, dtypes=[tf.float32, tf.float32],
                                 shapes=[[128, 128, 3], [n_labels]])
     imq_enq_op = imq.enqueue([image, image_labels])
     batch_size = 64 
@@ -159,7 +159,7 @@ test_dir = os.path.join(data_path, 'splits', 'test')
 
 # Get all paths for each split.
 user_paths = glob('{}/*.jpg'.format(user_dir))
-train_paths = glob('{}/*.jpg'.format(train_dir))
+train_paths = glob('{}/*.jpg'.format(train_dir))[:20000]
 test_paths = glob('{}/*.jpg'.format(test_dir))
 
 user_paths_and_global_indices = zip(
@@ -195,7 +195,6 @@ test_loader, test_label_loader, test_qr_f, test_qr_i = img_and_lbl_queue_setup(l
 
 x_pix = x_loader
 x = norm_img(x_pix)  # Converts pixels to [-1, 1].
-x_label = x_label_loader
 z = tf.random_normal([tf.shape(x)[0], z_dim])
 weighted = tf.placeholder(tf.bool, name='weighted')
 
@@ -461,8 +460,7 @@ with sv.managed_session() as sess:
     # Begin: train() ##########################################################
     z_fixed = np.random.normal(0, 1, size=(batch_size, z_dim))
 
-    # Save a sample.
-    #ss = sess.run(x_label)
+    #TODO: Save a sample.
 
     # Train generator.
     for step in trange(start_step, max_step):
