@@ -62,6 +62,7 @@ data_path = '../../began/BEGAN-tensorflow/data/celeba'
 model_dir = 'logs/test' 
 dataset = 'celeba'
 train_ratio = [20, 80]
+n_user = 100
 
 optimizer = 'rmsprop'
 batch_size = 64
@@ -88,7 +89,7 @@ repeat_num = int(np.log2(scale_size)) - 2
 channel = 3
 
 start_step = 0
-log_step = 100
+log_step = 10
 max_step = 200000
 save_step = 1000
 lr_update_step = 100000
@@ -111,7 +112,8 @@ def img_and_lbl_queue_setup(filenames, labels):
     image = tf.image.crop_to_bounding_box(image, 50, 25, 128, 128)
     image = tf.to_float(image)
     
-    image_index = [tf.cast(tf.string_to_number(tf.substr(flnm, len(data_dir), 6)) - 1, tf.int32)]
+    # Below, added 1 to len(data_dir) to account for extra "/" at end.
+    image_index = [tf.cast(tf.string_to_number(tf.substr(flnm, len(data_dir)+1, 6)) - 1, tf.int32)]
     n_labels = 2
     image_labels = tf.reshape(tf.gather(labels_tensor, indices=image_index, axis=0), [n_labels])
     imq = tf.RandomShuffleQueue(capacity=60, min_after_dequeue=30, dtypes=[tf.float32, tf.float32],
@@ -145,22 +147,47 @@ label_file = os.path.join(data_path, 'list_attr_celeba.txt')
 labels, label_names, file_to_idx = load_labels(label_file)
 feature_id = label_names.index('Eyeglasses')
 labels = np.array(  # Binary one-hot labels.
-    [[1.0, 0.0] if l[feature_id] == 1 else [0.0, 1.0] for l in labels]) 
+    [[1.0, 0.0] if lab[feature_id] == 1 else [0.0, 1.0] for lab in labels]) 
 
 tf.Graph().as_default()
 
+# Begin: Set up queues. #######################################################
 # Create queues for each dataset.
 user_dir = os.path.join(data_path, 'splits', 'user')
 train_dir = os.path.join(data_path, 'splits', 'train')
 test_dir = os.path.join(data_path, 'splits', 'test')
 
+# Get all paths for each split.
 user_paths = glob('{}/*.jpg'.format(user_dir))
 train_paths = glob('{}/*.jpg'.format(train_dir))
 test_paths = glob('{}/*.jpg'.format(test_dir))
 
+user_paths_and_global_indices = zip(
+    user_paths, [file_to_idx[pa[-10:]] for pa in user_paths])
+train_paths_and_global_indices = zip(
+    train_paths, [file_to_idx[pa[-10:]] for pa in train_paths])
+
+user_paths_0 = ([pa for pa, gi in user_paths_and_global_indices if labels[gi][0] == 1])  # label [1.0, 0.0]
+user_paths_1 = ([pa for pa, gi in user_paths_and_global_indices if labels[gi][0] != 1])
+assert n_user / 2 < len(user_paths_0) and n_user / 2 < len(user_paths_1), 'asking for more than we have'
+user_paths = np.concatenate((
+    np.random.choice(user_paths_0, n_user / 2),
+    np.random.choice(user_paths_1, n_user / 2)))
+
+train_paths_0 = ([pa for pa, gi in train_paths_and_global_indices if labels[gi][0] == 1])  # label [1.0, 0.0]
+train_paths_1 = ([pa for pa, gi in train_paths_and_global_indices if labels[gi][0] != 1])
+larger_class_multiplier = float(max(train_ratio) / min(train_ratio))
+train_num_paths_1_desired = int(larger_class_multiplier * len(train_paths_0))
+assert train_num_paths_1_desired < len(train_paths_1), 'asking for more of class 1 than we have'
+train_paths = np.concatenate((
+    train_paths_0,
+    np.random.choice(train_paths_1, train_num_paths_1_desired)))
+
 user_loader, user_label_loader, user_qr_f, user_qr_i = img_and_lbl_queue_setup(list(user_paths), labels)
 x_loader, x_label_loader, train_qr_f, train_qr_i = img_and_lbl_queue_setup(list(train_paths), labels)
 test_loader, test_label_loader, test_qr_f, test_qr_i = img_and_lbl_queue_setup(list(test_paths), labels)
+# End: Set up queues. #########################################################
+
 
 ###############################################################################
 # Begin: build_model() 
@@ -362,7 +389,7 @@ if 1:
     dec_grads, dec_vars = zip(*d_opt.compute_gradients(
         d_loss, var_list=d_var_dec))
     enc_grads_clipped = tuple(
-        [tf.clip_by_value(g, -0.01, 0.01) for g in enc_grads])
+        [tf.clip_by_value(grad, -0.01, 0.01) for grad in enc_grads])
     d_grads = enc_grads_clipped + dec_grads
     d_vars = enc_vars + dec_vars
     d_optim = d_opt.apply_gradients(zip(d_grads, d_vars))
@@ -422,13 +449,20 @@ with sv.managed_session() as sess:
     test_qr_i.create_threads(sess, coord=coord, start=True)
     sess.run(init_op)
 
+    def generate(inputs, root_path=None, path=None, idx=None, save=True):
+        x_ = sess.run(g, {z: inputs})
+        if path is None and save:
+            path = os.path.join(root_path, 'G_{}.png'.format(idx))
+            save_image(x_.transpose([0, 2, 3, 1]), path)
+            print("[*] Samples saved: {}".format(path))
+        return x_
+
 
     # Begin: train() ##########################################################
     z_fixed = np.random.normal(0, 1, size=(batch_size, z_dim))
 
     # Save a sample.
     #ss = sess.run(x_label)
-    pdb.set_trace()
 
     # Train generator.
     for step in trange(start_step, max_step):
@@ -455,7 +489,7 @@ with sv.managed_session() as sess:
                 'keeping_probs': keeping_probs,
             })
 
-        weighted = True 
+        weighted_ = True 
         batch_train = sess.run(x_pix)
         batch_z = np.random.normal(0, 1, size=(batch_size, z_dim))
         # Pre-fetch data and simulations, and normalize for classification.
@@ -463,7 +497,8 @@ with sv.managed_session() as sess:
         g_for_pr0 = sess.run(g,
             feed_dict={
                 x_pix: batch_train,
-                z: batch_z})
+                z: batch_z,
+                weighted: weighted_})
         # Get probs using encodings.
         x_pred_pr0 = sess.run(label_pred_pr0,
             feed_dict={
@@ -488,35 +523,26 @@ with sv.managed_session() as sess:
                 lambda_ae: 1.0,
                 lambda_fm: 0.0,
                 dropout_pr: 1.0,
-                weighted: weighted})
+                weighted: weighted_})
 
         # Log and save as needed.
         if step % log_step == 0:
             summary_writer.add_summary(result['summary'], step)
             summary_writer.flush()
-            ae_loss_real = result['ae_loss_real']
-            ae_loss_fake = result['ae_loss_fake']
-            mmd = result['mmd']
+            ae_loss_real_ = result['ae_loss_real']
+            ae_loss_fake_ = result['ae_loss_fake']
+            mmd_ = result['mmd']
             print(('[{}/{}] LOSSES: ae_real/fake: {:.6f}, {:.6f} '
                 'mmd: {:.6f}').format(
-                    step, max_step, ae_loss_real, ae_loss_fake, mmd))
+                    step, max_step, ae_loss_real_, ae_loss_fake_, mmd_))
         if step % (save_step) == 0:
-            z = np.random.normal(0, 1, size=(batch_size, z_dim))
+            z_rand= np.random.normal(0, 1, size=(batch_size, z_dim))
             gen_rand = generate(
-                z, model_dir, idx='rand'+str(step))
+                z_rand, model_dir, idx='rand'+str(step))
             gen_fixed = generate(
                 z_fixed, model_dir, idx='fix'+str(step))
         if step % lr_update_step == lr_update_step - 1:
             sess.run([g_lr_update, d_lr_update])
-
-
-def generate(inputs, root_path=None, path=None, idx=None, save=True):
-    x = sess.run(g, {z: inputs})
-    if path is None and save:
-        path = os.path.join(root_path, 'G_{}.png'.format(idx))
-        save_image(x, path)
-        print("[*] Samples saved: {}".format(path))
-    return x
 
 
 def get_images_from_loader():
