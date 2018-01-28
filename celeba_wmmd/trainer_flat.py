@@ -14,9 +14,6 @@ from scipy.misc import imsave
 
 from models import *
 from utils import save_image
-# For MNIST classifier
-from tensorflow.examples.tutorials.mnist import input_data
-import tempfile
 
 
 def next(loader):
@@ -56,31 +53,33 @@ def denorm_img(norm, data_format):
     return tf.clip_by_value(to_nhwc((norm + 1)*127.5, data_format), 0, 255)
 
 
-
+# config()
 split = 'train'
 data_path = '../../began/BEGAN-tensorflow/data/celeba'
 model_dir = 'logs/test' 
 dataset = 'celeba'
-train_ratio = [20, 80]
-n_user = 100
+scale_size = 64
 
+train_ratio = [20, 80]
+n_user = 1000
 optimizer = 'rmsprop'
-batch_size = 64
+batch_size = 8 
+z_dim = 32 
+num_conv_filters = 128 
+lr = 1e-4
+lr_update_step = 5000
+
+lambda_mmd_setting = 1000.0
 use_mmd = True
-lambda_mmd_setting = 100.
 weighted = True
 
 step = tf.Variable(0, name='step', trainable=False)
-d_lr = tf.Variable(0.00008, name='d_lr', trainable=False)
-g_lr = tf.Variable(0.00008, name='g_lr', trainable=False)
-c_lr = tf.Variable(0.00008, name='c_lr', trainable=False)
+d_lr = tf.Variable(lr, name='d_lr', trainable=False)
+g_lr = tf.Variable(lr, name='g_lr', trainable=False)
+c_lr = tf.Variable(lr, name='c_lr', trainable=False)
 d_lr_update = tf.assign(d_lr, tf.maximum(d_lr * 0.5, 0.00002), name='d_lr_update')
 g_lr_update = tf.assign(g_lr, tf.maximum(g_lr * 0.5, 0.00002), name='g_lr_update')
 c_lr_update = tf.assign(c_lr, tf.maximum(c_lr * 0.5, 0.00002), name='c_lr_update')
-
-z_dim = 64
-num_conv_filters = 128
-scale_size = 64
 
 use_gpu = True
 data_format = 'NCHW'
@@ -92,7 +91,6 @@ start_step = 0
 log_step = 100
 max_step = 200000
 save_step = 1000
-lr_update_step = 100000
 
 
 # Set up all queues.
@@ -119,7 +117,6 @@ def img_and_lbl_queue_setup(filenames, labels):
     imq = tf.RandomShuffleQueue(capacity=6000, min_after_dequeue=5000, dtypes=[tf.float32, tf.float32],
                                 shapes=[[128, 128, 3], [n_labels]])
     imq_enq_op = imq.enqueue([image, image_labels])
-    batch_size = 64 
     imgs, img_lbls = imq.dequeue_many(batch_size)
     imgs = tf.image.resize_nearest_neighbor(imgs, size=[64, 64])
     #imgs = tf.subtract(1., tf.divide(imgs, 255.5))
@@ -159,29 +156,44 @@ test_dir = os.path.join(data_path, 'splits', 'test')
 
 # Get all paths for each split.
 user_paths = glob('{}/*.jpg'.format(user_dir))
-train_paths = glob('{}/*.jpg'.format(train_dir))[:20000]
+train_paths = glob('{}/*.jpg'.format(train_dir))
 test_paths = glob('{}/*.jpg'.format(test_dir))
+test_paths = [pa for pa in test_paths if ('202599' not in pa and '202598' not in pa)]
 
 user_paths_and_global_indices = zip(
     user_paths, [file_to_idx[pa[-10:]] for pa in user_paths])
 train_paths_and_global_indices = zip(
     train_paths, [file_to_idx[pa[-10:]] for pa in train_paths])
+test_paths_and_global_indices = zip(
+    test_paths, [file_to_idx[pa[-10:]] for pa in test_paths])
 
-user_paths_0 = ([pa for pa, gi in user_paths_and_global_indices if labels[gi][0] == 1])  # label [1.0, 0.0]
-user_paths_1 = ([pa for pa, gi in user_paths_and_global_indices if labels[gi][0] != 1])
-assert n_user / 2 < len(user_paths_0) and n_user / 2 < len(user_paths_1), 'asking for more than we have'
+user_paths_0 = [pa for pa, gi in user_paths_and_global_indices \
+    if labels[gi][0] == 1]  # label [1.0, 0.0]
+user_paths_1 = [pa for pa, gi in user_paths_and_global_indices \
+    if labels[gi][0] != 1]
+assert n_user / 2 < len(user_paths_0) and n_user / 2 < len(user_paths_1), \
+    'asking for more than we have'
 user_paths = np.concatenate((
     np.random.choice(user_paths_0, n_user / 2),
     np.random.choice(user_paths_1, n_user / 2)))
+print('Built USER set. Proportion class0 = {}'.format(0.5))
 
 train_paths_0 = ([pa for pa, gi in train_paths_and_global_indices if labels[gi][0] == 1])  # label [1.0, 0.0]
 train_paths_1 = ([pa for pa, gi in train_paths_and_global_indices if labels[gi][0] != 1])
-larger_class_multiplier = float(max(train_ratio) / min(train_ratio))
+larger_class_multiplier = max(train_ratio) / float(min(train_ratio))
 train_num_paths_1_desired = int(larger_class_multiplier * len(train_paths_0))
 assert train_num_paths_1_desired < len(train_paths_1), 'asking for more of class 1 than we have'
 train_paths = np.concatenate((
     train_paths_0,
     np.random.choice(train_paths_1, train_num_paths_1_desired)))
+print('Built TRAIN set. Proportion class0 = {}'.format(
+    len(train_paths_0) / float(len(train_paths))))
+
+test_paths_0 = ([pa for pa, gi in test_paths_and_global_indices if labels[gi][0] == 1])  # label [1.0, 0.0]
+test_paths_1 = ([pa for pa, gi in test_paths_and_global_indices if labels[gi][0] != 1])
+test_paths = np.concatenate((test_paths_0, test_paths_1))
+print('Built TEST set. Proportion class0 = {}'.format(
+    len(test_paths_0) / float(len(test_paths))))
 
 user_loader, user_label_loader, user_qr_f, user_qr_i = img_and_lbl_queue_setup(list(user_paths), labels)
 x_loader, x_label_loader, train_qr_f, train_qr_i = img_and_lbl_queue_setup(list(train_paths), labels)
@@ -278,6 +290,24 @@ correct_prediction = tf.equal(
     tf.argmax(label_pred, 1), tf.argmax(c_labels, 1))
 correct_prediction = tf.cast(correct_prediction, tf.float32)
 classifier_accuracy = tf.reduce_mean(correct_prediction)
+
+# Compute accuracy on test_loader, test_label_loader inputs.
+test_images_pix = test_loader
+test_labels = test_label_loader
+test_images = norm_img(test_images_pix)
+_, test_enc, _, _ = AutoencoderCNN(
+    test_images, channel, z_dim, repeat_num,
+    num_conv_filters, data_format, reuse=True)
+test_label_pred, _, _ = classifier_NN_enc(
+    test_enc, 1.0, reuse=True)
+cross_entropy_test = tf.nn.softmax_cross_entropy_with_logits(
+    labels=test_labels, logits=test_label_pred)
+cross_entropy_test = tf.reduce_mean(cross_entropy)
+correct_prediction_test = tf.equal(
+    tf.argmax(test_label_pred, 1), tf.argmax(test_labels, 1))
+correct_prediction_test = tf.cast(correct_prediction_test, tf.float32)
+classifier_accuracy_test = tf.reduce_mean(correct_prediction_test)
+
 #### End CLASSIFIER ############################################################
 
 
@@ -356,12 +386,20 @@ ae_loss_real = tf.cond(
         tf.reduce_sum(p1_weights_ae_normed * tf.reshape(
             tf.reduce_sum(tf.square(AE_x - x), [1, 2, 3]), [-1, 1]))),
     lambda: tf.reduce_mean(tf.square(AE_x - x)))
+#ae_loss_real = tf.reduce_mean(tf.square(AE_x - x))
 ae_loss_fake = tf.reduce_mean(tf.square(AE_g - g))
-ae_loss = ae_loss_real
+ae_loss = ae_loss_real + ae_loss_fake
 fm1 = tf.reduce_mean(ge, axis=0) - tf.reduce_mean(xe, axis=0)
 fm2 = tf.nn.relu(fm1)
 fm3 = tf.reduce_mean(fm2)
 first_moment_loss = -1. * fm3
+#d_loss = (
+#    lambda_ae * ae_loss -
+#    lambda_mmd * mmd -
+#    lambda_fm * first_moment_loss)
+#g_loss = (
+#    lambda_mmd * mmd +
+#    lambda_fm * first_moment_loss)
 d_loss = (
     lambda_ae * ae_loss -
     lambda_mmd * mmd -
@@ -398,10 +436,10 @@ g_optim = g_opt.minimize(
     g_loss, var_list=g_var, global_step=step)
 
 summary_op = tf.summary.merge([
-    tf.summary.image("a_g", g_pix, max_outputs=10),
-    tf.summary.image("b_AE_g", AE_g_pix, max_outputs=10),
-    tf.summary.image("c_x", to_nhwc(x_pix, data_format), max_outputs=10),
-    tf.summary.image("d_AE_x", AE_x_pix, max_outputs=10),
+    tf.summary.image("a_g", g_pix, max_outputs=7),
+    tf.summary.image("b_AE_g", AE_g_pix, max_outputs=7),
+    tf.summary.image("c_x", to_nhwc(x_pix, data_format), max_outputs=7),
+    tf.summary.image("d_AE_x", AE_x_pix, max_outputs=7),
     tf.summary.scalar("loss/d_loss", d_loss),
     tf.summary.scalar("loss/ae_loss_real", ae_loss_real),
     tf.summary.scalar("loss/ae_loss_fake", ae_loss_fake),
@@ -412,6 +450,7 @@ summary_op = tf.summary.merge([
     tf.summary.scalar("prop/x_prop0", x_prop0),
     tf.summary.scalar("prop/g_prop0", g_prop0),
     tf.summary.scalar("prop/classifier_accuracy_user", classifier_accuracy),
+    tf.summary.scalar("prop/classifier_accuracy_test", classifier_accuracy_test),
 ])
 
 ###############################################################################
@@ -469,14 +508,21 @@ with sv.managed_session() as sess:
 
         # Log classifier results.
         if step % log_step == 0:
-            user_acc = sess.run(classifier_accuracy, {dropout_pr: 1.0})
-            print('\nstep {},\nclassifer_acc on user {:.4f}'.format(step, user_acc))
+            user_acc, test_acc = sess.run([
+                classifier_accuracy, classifier_accuracy_test],
+            feed_dict={
+                dropout_pr: 1.0})
+            print('\nstep {},\nclassifer_acc user/test {:.4f}, {:.4f}'.format(
+                step, user_acc, test_acc))
 
         # TRAIN GAN.
         # Always run optim nodes, and sometimes, some logs.
         fetch_dict = {
-            'd_optim': d_optim,
-            'g_optim': g_optim,
+            'd_optim0': d_optim,
+            'd_optim1': d_optim,
+            'd_optim2': d_optim,
+            'd_optim3': d_optim,
+            'g_optim4': g_optim,
         }
         if step % log_step == 0:
             fetch_dict.update({

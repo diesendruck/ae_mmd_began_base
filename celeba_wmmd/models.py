@@ -5,7 +5,6 @@ slim = tf.contrib.slim
 
 
 def GeneratorCNN(z, num_filters, channels_out, repeat_num, data_format, reuse):
-    # NOTE: Changed reshape to 7x7 for 28x28 mnist.
     with tf.variable_scope("G", reuse=reuse) as vs:
         num_output = int(np.prod([8, 8, num_filters]))
         x = slim.fully_connected(z, num_output, activation_fn=None)
@@ -227,7 +226,7 @@ def classifier_NN_enc(x, dropout_pr, reuse):
         #x = slim.fully_connected(x, 512, activation_fn=tf.nn.elu, scope='fc3')
         #x = slim.dropout(x, dropout_pr, scope='drop3')
         x = slim.fully_connected(x, 32, activation_fn=tf.nn.elu, scope='fc4')
-        x = slim.dropout(x, dropout_pr, scope='drop4')
+        #x = slim.dropout(x, dropout_pr, scope='drop4')
         y_logits = slim.fully_connected(x, 2, activation_fn=None, scope='fc5')
         y_probs = tf.nn.softmax(y_logits)
 
