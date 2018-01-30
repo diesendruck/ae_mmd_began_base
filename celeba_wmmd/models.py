@@ -4,17 +4,21 @@ import tensorflow as tf
 slim = tf.contrib.slim
 
 
+deep = 1
 def GeneratorCNN(z, num_filters, channels_out, repeat_num, data_format, reuse):
     with tf.variable_scope("G", reuse=reuse) as vs:
         num_output = int(np.prod([8, 8, num_filters]))
         x = slim.fully_connected(z, num_output, activation_fn=None)
         x = reshape(x, 8, 8, num_filters, data_format)
+        start_num_filters = num_filters * 1.
         
         for idx in range(repeat_num):
+            num_filters = start_num_filters * (repeat_num - idx)
             x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
                             data_format=data_format)
-            x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
-                            data_format=data_format)
+            if deep:
+                x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
+                                data_format=data_format)
             if idx < repeat_num - 1:
                 x = upscale(x, 2, data_format)
 
@@ -32,13 +36,14 @@ def AutoencoderCNN(x, input_channel, z_num, repeat_num, num_filters,
         x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
                         data_format=data_format)
 
-        prev_channel_num = num_filters
+        start_num_filters = num_filters * 1.
         for idx in range(repeat_num):
             channel_num = num_filters * (idx + 1)
             x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu,
                             data_format=data_format)
-            x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu,
-                            data_format=data_format)
+            if deep:
+                x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu,
+                                data_format=data_format)
             if idx < repeat_num - 1:
                 x = slim.conv2d(x, channel_num, 3, 2, activation_fn=tf.nn.elu,
                                 data_format=data_format)
@@ -55,12 +60,15 @@ def AutoencoderCNN(x, input_channel, z_num, repeat_num, num_filters,
         x = reshape(x, 8, 8, num_filters, data_format)
         
         for idx in range(repeat_num):
+            num_filters = start_num_filters * (repeat_num - idx)
             x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
                             data_format=data_format)
-            x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
-                            data_format=data_format)
+            if deep:
+                x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
+                                data_format=data_format)
             if idx < repeat_num - 1:
                 x = upscale(x, 2, data_format)
+
 
         out = slim.conv2d(x, input_channel, 3, 1, activation_fn=None,
                           data_format=data_format)

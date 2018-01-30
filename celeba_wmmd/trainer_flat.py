@@ -1,16 +1,20 @@
 from __future__ import print_function
 
+import argparse
+import json
+import numpy as np
 import os
 import pdb
-import StringIO
 import scipy.misc
-import numpy as np
-from glob import glob
-from tqdm import trange
-from itertools import chain
+from scipy import misc
+import StringIO
+import time
 from collections import deque
+from glob import glob
+from itertools import chain
 from PIL import Image
 from scipy.misc import imsave
+from tqdm import trange
 
 from models import *
 from utils import save_image
@@ -53,44 +57,97 @@ def denorm_img(norm, data_format):
     return tf.clip_by_value(to_nhwc((norm + 1)*127.5, data_format), 0, 255)
 
 
-# config()
-split = 'train'
-data_path = '../../began/BEGAN-tensorflow/data/celeba'
-model_dir = 'logs/test' 
-dataset = 'celeba'
-scale_size = 64
+def str2bool(v):
+        return v.lower() in ('true', '1')
 
-train_ratio = [20, 80]
-n_user = 1000
-optimizer = 'rmsprop'
-batch_size = 8 
-z_dim = 32 
-num_conv_filters = 128 
-lr = 1e-4
-lr_update_step = 5000
 
-lambda_mmd_setting = 1000.0
-use_mmd = True
-weighted = True
+parser = argparse.ArgumentParser()
+parser.add_argument('--data_path', type=str,
+        default='../../began/BEGAN-tensorflow/data/celeba')
+parser.add_argument('--data_format', type=str, default='NCHW')
+parser.add_argument('--tag', type=str, default='test')
+parser.add_argument('--dataset', type=str, default='celeba')
+parser.add_argument('--channel', type=int, default=3, choices=[3])
+parser.add_argument('--scale_size', type=int, default=64, choices=[64])
+parser.add_argument('--optimizer', type=str, default='rmsprop')
+parser.add_argument('--train_ratio', type=str, default='1090')
+# Begin commonly tuned.
+parser.add_argument('--on_encodings', type=str2bool, default=True)
+parser.add_argument('--z_dim', type=int,                  default=50)
+parser.add_argument('--batch_size', type=int,             default=16)
+parser.add_argument('--num_conv_filters', type=int,       default=100)
+parser.add_argument('--lambda_ae_setting', type=float,    default=1.0)  # focus: ae
+parser.add_argument('--lambda_ae_fake_setting', type=float, default=0.0)  # focus: ae_loss_fake
+parser.add_argument('--lambda_fm_setting', type=float,    default=2500.0)  # focus: fm 
+parser.add_argument('--lambda_mmd_d_setting', type=float, default=1000.)  # focus: mmd 
+parser.add_argument('--lambda_mmd_g_setting', type=float, default=1000.)  # focus: mmd 
+parser.add_argument('--lr', type=float,                   default=8e-5)
+parser.add_argument('--lambda_glr_factor', type=float,    default=2.0)
+parser.add_argument('--lambda_clr_factor', type=float,    default=1.0)
+parser.add_argument('--lr_update_step', type=int,         default=7500)
+parser.add_argument('--lr_lower_boundary', type=float,    default=2e-6)
+parser.add_argument('--n_user', type=int,                 default=2000)
+# End commonly tuned.
+parser.add_argument('--use_mmd', type=str2bool, default=True)
+parser.add_argument('--weighted', type=str2bool, default=True)
+parser.add_argument('--log_step', type=int, default=100)
+parser.add_argument('--save_step', type=int, default=1000)
+parser.add_argument('--max_step', type=int, default=500000)
+parser.add_argument('--use_gpu', type=str2bool, default=True)
+parser.add_argument('--num_log_samples', type=int, default=7)
+
+config = parser.parse_args()
+data_path = config.data_path
+data_format = config.data_format
+tag = config.tag
+dataset = config.dataset
+channel = config.channel
+scale_size = config.scale_size
+optimizer = config.optimizer
+train_ratio = [int(config.train_ratio[:2]), int(config.train_ratio[2:])]
+n_user = config.n_user
+batch_size = config.batch_size
+num_conv_filters = config.num_conv_filters
+on_encodings = config.on_encodings
+z_dim = config.z_dim
+lr = config.lr
+lambda_glr_factor = config.lambda_glr_factor
+lambda_clr_factor = config.lambda_clr_factor
+lr_update_step = config.lr_update_step
+lr_lower_boundary = config.lr_lower_boundary
+lambda_ae_setting = config.lambda_ae_setting
+lambda_ae_fake_setting = config.lambda_ae_fake_setting
+lambda_fm_setting = config.lambda_fm_setting
+lambda_mmd_d_setting = config.lambda_mmd_d_setting
+lambda_mmd_g_setting = config.lambda_mmd_g_setting
+use_mmd = config.use_mmd
+weighted = config.weighted
+log_step = config.log_step
+save_step = config.save_step
+max_step = config.max_step
+use_gpu = config.use_gpu
+num_log_samples = config.num_log_samples
+if tag == 'test':
+    log_dir = os.path.join('logs', time.strftime("%Y%m%d-%H%M%S"))
+else:
+    log_dir = os.path.join('logs', config.tag)
+if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+with open(os.path.join(log_dir, 'config.txt'), 'w') as f:
+    f.write(str(config))
+    print(str(config))
 
 step = tf.Variable(0, name='step', trainable=False)
 d_lr = tf.Variable(lr, name='d_lr', trainable=False)
-g_lr = tf.Variable(lr, name='g_lr', trainable=False)
-c_lr = tf.Variable(lr, name='c_lr', trainable=False)
-d_lr_update = tf.assign(d_lr, tf.maximum(d_lr * 0.5, 0.00002), name='d_lr_update')
-g_lr_update = tf.assign(g_lr, tf.maximum(g_lr * 0.5, 0.00002), name='g_lr_update')
-c_lr_update = tf.assign(c_lr, tf.maximum(c_lr * 0.5, 0.00002), name='c_lr_update')
-
-use_gpu = True
-data_format = 'NCHW'
-
+g_lr = tf.Variable(lambda_glr_factor * lr, name='g_lr', trainable=False)
+c_lr = tf.Variable(lambda_clr_factor * lr, name='c_lr', trainable=False)
+d_lr_update = tf.assign(d_lr, tf.maximum(d_lr * 0.5, lr_lower_boundary),
+        name='d_lr_update')
+g_lr_update = tf.assign(g_lr, tf.maximum(g_lr * 0.5, lr_lower_boundary),
+        name='g_lr_update')
+c_lr_update = tf.assign(c_lr, tf.maximum(c_lr * 0.5, lr_lower_boundary),
+        name='c_lr_update')
 repeat_num = int(np.log2(scale_size)) - 2
-channel = 3
-
-start_step = 0
-log_step = 100
-max_step = 200000
-save_step = 1000
 
 
 # Set up all queues.
@@ -99,7 +156,8 @@ def img_and_lbl_queue_setup(filenames, labels):
     labels_tensor = tf.constant(labels, dtype=tf.float32)
     
     filenames_tensor = tf.constant(filenames)
-    fnq = tf.RandomShuffleQueue(capacity=6000, min_after_dequeue=5000, dtypes=tf.string)
+    fnq = tf.RandomShuffleQueue(
+        capacity=6000, min_after_dequeue=5000, dtypes=tf.string)
     fnq_enq_op = fnq.enqueue_many(filenames_tensor)
     filename = fnq.dequeue()
     
@@ -111,11 +169,14 @@ def img_and_lbl_queue_setup(filenames, labels):
     image = tf.to_float(image)
     
     # Below, added 1 to len(data_dir) to account for extra "/" at end.
-    image_index = [tf.cast(tf.string_to_number(tf.substr(flnm, len(data_dir)+1, 6)) - 1, tf.int32)]
+    image_index = [tf.cast(tf.string_to_number(tf.substr(
+        flnm, len(data_dir)+1, 6)) - 1, tf.int32)]
     n_labels = 2
-    image_labels = tf.reshape(tf.gather(labels_tensor, indices=image_index, axis=0), [n_labels])
-    imq = tf.RandomShuffleQueue(capacity=6000, min_after_dequeue=5000, dtypes=[tf.float32, tf.float32],
-                                shapes=[[128, 128, 3], [n_labels]])
+    image_labels = tf.reshape(tf.gather(
+        labels_tensor, indices=image_index, axis=0), [n_labels])
+    imq = tf.RandomShuffleQueue(
+        capacity=6000, min_after_dequeue=5000, dtypes=[tf.float32, tf.float32],
+        shapes=[[128, 128, 3], [n_labels]])
     imq_enq_op = imq.enqueue([image, image_labels])
     imgs, img_lbls = imq.dequeue_many(batch_size)
     imgs = tf.image.resize_nearest_neighbor(imgs, size=[64, 64])
@@ -134,22 +195,26 @@ def load_labels(label_file, label_choices=None):
     n_labels = len(label_choices)
     label_names = [label_names[choice] for choice in label_choices]
     
-    file_to_idx = {lines[i][:10]: i for i in xrange(2, len(lines))}
+    # Here, idx will refer to index of the labels array. Therefore, the
+    # index value gets a minus two, since lines has two extra rows, but
+    # the labels array will not.
+    file_to_idx = {lines[i][:10]: i - 2 for i in xrange(2, len(lines))}
     labels = np.array([[int(it) for it in line.strip().split(
         ' ')[1:] if it != ''] for line in lines[2:]])[:, label_choices]
     
     return labels, label_names, file_to_idx
 
 label_file = os.path.join(data_path, 'list_attr_celeba.txt')
-labels, label_names, file_to_idx = load_labels(label_file)
+labels_, label_names, file_to_idx = load_labels(label_file)
+idx_to_file = {v: i for i, v in file_to_idx.iteritems()}
 feature_id = label_names.index('Eyeglasses')
 labels = np.array(  # Binary one-hot labels.
-    [[1.0, 0.0] if lab[feature_id] == 1 else [0.0, 1.0] for lab in labels]) 
+    [[1.0, 0.0] if lab[feature_id] == 1 else [0.0, 1.0] for lab in labels_]) 
 
 tf.Graph().as_default()
 
 # Begin: Set up queues. #######################################################
-# Create queues for each dataset.
+# Define directories for each split.
 user_dir = os.path.join(data_path, 'splits', 'user')
 train_dir = os.path.join(data_path, 'splits', 'train')
 test_dir = os.path.join(data_path, 'splits', 'test')
@@ -158,8 +223,9 @@ test_dir = os.path.join(data_path, 'splits', 'test')
 user_paths = glob('{}/*.jpg'.format(user_dir))
 train_paths = glob('{}/*.jpg'.format(train_dir))
 test_paths = glob('{}/*.jpg'.format(test_dir))
-test_paths = [pa for pa in test_paths if ('202599' not in pa and '202598' not in pa)]
+#test_paths = [pa for pa in test_paths if ('202600' not in pa and '202598' not in pa)]
 
+# Get global indices for each split.
 user_paths_and_global_indices = zip(
     user_paths, [file_to_idx[pa[-10:]] for pa in user_paths])
 train_paths_and_global_indices = zip(
@@ -167,37 +233,53 @@ train_paths_and_global_indices = zip(
 test_paths_and_global_indices = zip(
     test_paths, [file_to_idx[pa[-10:]] for pa in test_paths])
 
-user_paths_0 = [pa for pa, gi in user_paths_and_global_indices \
-    if labels[gi][0] == 1]  # label [1.0, 0.0]
-user_paths_1 = [pa for pa, gi in user_paths_and_global_indices \
-    if labels[gi][0] != 1]
+# Assemble 50-50 user/classifier paths.
+user_paths_0 = [pa for pa, gi in user_paths_and_global_indices if \
+    labels[gi][0] == 1]  # label [1.0, 0.0]
+user_paths_1 = [pa for pa, gi in user_paths_and_global_indices if \
+    labels[gi][0] != 1]
 assert n_user / 2 < len(user_paths_0) and n_user / 2 < len(user_paths_1), \
     'asking for more than we have'
 user_paths = np.concatenate((
     np.random.choice(user_paths_0, n_user / 2),
     np.random.choice(user_paths_1, n_user / 2)))
-print('Built USER set. Proportion class0 = {}'.format(0.5))
+np.random.shuffle(user_paths)
+print('Built USER set. Proportion class0 = {}, n = {}'.format(
+    0.5, len(user_paths)))
 
-train_paths_0 = ([pa for pa, gi in train_paths_and_global_indices if labels[gi][0] == 1])  # label [1.0, 0.0]
-train_paths_1 = ([pa for pa, gi in train_paths_and_global_indices if labels[gi][0] != 1])
-larger_class_multiplier = max(train_ratio) / float(min(train_ratio))
-train_num_paths_1_desired = int(larger_class_multiplier * len(train_paths_0))
-assert train_num_paths_1_desired < len(train_paths_1), 'asking for more of class 1 than we have'
+# Assemble training paths for given train ratio.
+train_paths_0 = [pa for pa, gi in train_paths_and_global_indices if \
+    labels[gi][0] == 1]  # label [1.0, 0.0]
+train_paths_1 = [pa for pa, gi in train_paths_and_global_indices if \
+    labels[gi][0] != 1]
+class1_multiplier = train_ratio[1] / float(train_ratio[0])
+train_num_paths_1_desired = int(class1_multiplier * len(train_paths_0))
+assert train_num_paths_1_desired < len(train_paths_1), \
+    'asking for more of class 1 than we have'
 train_paths = np.concatenate((
     train_paths_0,
     np.random.choice(train_paths_1, train_num_paths_1_desired)))
-print('Built TRAIN set. Proportion class0 = {}'.format(
-    len(train_paths_0) / float(len(train_paths))))
+np.random.shuffle(train_paths)
+print('Built TRAIN set. Proportion class0 = {}, n = {}'.format(
+    len(train_paths_0) / float(len(train_paths)), len(train_paths)))
 
-test_paths_0 = ([pa for pa, gi in test_paths_and_global_indices if labels[gi][0] == 1])  # label [1.0, 0.0]
-test_paths_1 = ([pa for pa, gi in test_paths_and_global_indices if labels[gi][0] != 1])
+# Assemble test paths with natural ratio.
+test_paths_0 = [pa for pa, gi in test_paths_and_global_indices if \
+    labels[gi][0] == 1]  # label [1.0, 0.0]
+test_paths_1 = [pa for pa, gi in test_paths_and_global_indices if \
+    labels[gi][0] != 1]
 test_paths = np.concatenate((test_paths_0, test_paths_1))
-print('Built TEST set. Proportion class0 = {}'.format(
-    len(test_paths_0) / float(len(test_paths))))
+np.random.shuffle(test_paths)
+print('Built TEST set. Proportion class0 = {}, n = {}'.format(
+    len(test_paths_0) / float(len(test_paths)), len(test_paths)))
 
-user_loader, user_label_loader, user_qr_f, user_qr_i = img_and_lbl_queue_setup(list(user_paths), labels)
-x_loader, x_label_loader, train_qr_f, train_qr_i = img_and_lbl_queue_setup(list(train_paths), labels)
-test_loader, test_label_loader, test_qr_f, test_qr_i = img_and_lbl_queue_setup(list(test_paths), labels)
+# Set up queues for each split.
+user_loader, user_label_loader, user_qr_f, user_qr_i = \
+    img_and_lbl_queue_setup(list(user_paths), labels)
+x_loader, x_label_loader, train_qr_f, train_qr_i =  \
+    img_and_lbl_queue_setup(list(train_paths), labels)
+test_loader, test_label_loader, test_qr_f, test_qr_i = \
+    img_and_lbl_queue_setup(list(test_paths), labels)
 # End: Set up queues. #########################################################
 
 
@@ -224,9 +306,16 @@ AE_g_pix = denorm_img(AE_g, data_format)
 AE_x_pix = denorm_img(AE_x, data_format)
 
 # Begin: MMD ####################################################################
-xe = x_enc 
-ge = g_enc 
-sigma_list = [1., 2., 4., 8., 16.]
+if on_encodings:
+    # Kernel on encodings.
+    xe = x_enc 
+    ge = g_enc 
+    sigma_list = [1., 2., 4., 8., 16.]
+else:
+    # Kernel on full imgs.
+    xe = tf.reshape(x, [tf.shape(x)[0], -1]) 
+    ge = tf.reshape(g, [tf.shape(g)[0], -1]) 
+    sigma_list = [2.0, 5.0, 10.0, 20.0, 40.0, 80.0]
 data_num = tf.shape(xe)[0]
 gen_num = tf.shape(ge)[0]
 v = tf.concat([xe, ge], 0)
@@ -377,22 +466,24 @@ mmd_unweighted = (
 
 
 # Define losses.
-lambda_mmd = tf.Variable(0., trainable=False, name='lambda_mmd')
+lambda_mmd_d = tf.Variable(0., trainable=False, name='lambda_mmd_d')
+lambda_mmd_g = tf.Variable(0., trainable=False, name='lambda_mmd_g')
 lambda_ae = tf.Variable(0., trainable=False, name='lambda_ae')
+lambda_ae_fake = tf.Variable(0., trainable=False, name='lambda_ae_fake')
 lambda_fm = tf.Variable(0., trainable=False, name='lambda_fm')
+fm1 = tf.reduce_mean(ge, axis=0) - tf.reduce_mean(xe, axis=0)
+fm2 = tf.nn.relu(fm1)
+fm3 = tf.reduce_mean(fm2)
+first_moment_loss = -1. * fm3
 ae_loss_real = tf.cond(
     weighted,
     lambda: (
         tf.reduce_sum(p1_weights_ae_normed * tf.reshape(
             tf.reduce_sum(tf.square(AE_x - x), [1, 2, 3]), [-1, 1]))),
     lambda: tf.reduce_mean(tf.square(AE_x - x)))
-#ae_loss_real = tf.reduce_mean(tf.square(AE_x - x))
+ae_loss_real_unweighted = tf.reduce_mean(tf.square(AE_x - x))
 ae_loss_fake = tf.reduce_mean(tf.square(AE_g - g))
-ae_loss = ae_loss_real + ae_loss_fake
-fm1 = tf.reduce_mean(ge, axis=0) - tf.reduce_mean(xe, axis=0)
-fm2 = tf.nn.relu(fm1)
-fm3 = tf.reduce_mean(fm2)
-first_moment_loss = -1. * fm3
+ae_loss = ae_loss_real + lambda_ae_fake * ae_loss_fake
 #d_loss = (
 #    lambda_ae * ae_loss -
 #    lambda_mmd * mmd -
@@ -402,10 +493,10 @@ first_moment_loss = -1. * fm3
 #    lambda_fm * first_moment_loss)
 d_loss = (
     lambda_ae * ae_loss -
-    lambda_mmd * mmd -
+    lambda_mmd_d * mmd -
     lambda_fm * first_moment_loss)
 g_loss = (
-    lambda_mmd * mmd +
+    lambda_mmd_g * mmd +
     lambda_fm * first_moment_loss)
 
 # Optimizer nodes.
@@ -436,13 +527,15 @@ g_optim = g_opt.minimize(
     g_loss, var_list=g_var, global_step=step)
 
 summary_op = tf.summary.merge([
-    tf.summary.image("a_g", g_pix, max_outputs=7),
-    tf.summary.image("b_AE_g", AE_g_pix, max_outputs=7),
-    tf.summary.image("c_x", to_nhwc(x_pix, data_format), max_outputs=7),
-    tf.summary.image("d_AE_x", AE_x_pix, max_outputs=7),
+    tf.summary.image("a_g", g_pix, max_outputs=num_log_samples),
+    tf.summary.image("b_AE_g", AE_g_pix, max_outputs=num_log_samples),
+    tf.summary.image("c_x", to_nhwc(x_pix, data_format), max_outputs=num_log_samples),
+    tf.summary.image("d_AE_x", AE_x_pix, max_outputs=num_log_samples),
     tf.summary.scalar("loss/d_loss", d_loss),
+    tf.summary.scalar("loss/first_moment_loss", first_moment_loss),
     tf.summary.scalar("loss/ae_loss_real", ae_loss_real),
-    tf.summary.scalar("loss/ae_loss_fake", ae_loss_fake),
+    tf.summary.scalar("loss/unw_ae_loss_real", ae_loss_real_unweighted),
+    tf.summary.scalar("loss/unw_ae_loss_fake", ae_loss_fake),
     tf.summary.scalar("loss/mmd_u", mmd_unweighted),
     tf.summary.scalar("loss/mmd_w", mmd_weighted),
     tf.summary.scalar("misc/d_lr", d_lr),
@@ -461,8 +554,8 @@ summary_op = tf.summary.merge([
 init_op = tf.global_variables_initializer()
 
 saver = tf.train.Saver()
-summary_writer = tf.summary.FileWriter(model_dir)
-sv = tf.train.Supervisor(logdir=model_dir,
+summary_writer = tf.summary.FileWriter(log_dir)
+sv = tf.train.Supervisor(logdir=log_dir,
                         is_chief=True,
                         saver=saver,
                         summary_op=None,
@@ -488,21 +581,18 @@ with sv.managed_session() as sess:
     sess.run(init_op)
 
     def generate(inputs, root_path=None, path=None, idx=None, save=True):
-        x_ = sess.run(g, {z: inputs})
+        g_pix_ = sess.run(g_pix, {z: inputs})
         if path is None and save:
             path = os.path.join(root_path, 'G_{}.png'.format(idx))
-            save_image(x_.transpose([0, 2, 3, 1]), path)
+            save_image(g_pix_, path)
             print("[*] Samples saved: {}".format(path))
-        return x_
-
+        return g_pix_
 
     # Begin: train() ##########################################################
     z_fixed = np.random.normal(0, 1, size=(batch_size, z_dim))
 
-    #TODO: Save a sample.
-
     # Train generator.
-    for step in trange(start_step, max_step):
+    for step in trange(0, max_step):
         # TRAIN CLASSIFIER.
         sess.run(c_optim, {dropout_pr: 0.5})
 
@@ -518,11 +608,8 @@ with sv.managed_session() as sess:
         # TRAIN GAN.
         # Always run optim nodes, and sometimes, some logs.
         fetch_dict = {
-            'd_optim0': d_optim,
-            'd_optim1': d_optim,
-            'd_optim2': d_optim,
-            'd_optim3': d_optim,
-            'g_optim4': g_optim,
+            'd_optim': d_optim,
+            'g_optim': g_optim,
         }
         if step % log_step == 0:
             fetch_dict.update({
@@ -530,6 +617,7 @@ with sv.managed_session() as sess:
                 'ae_loss_real': ae_loss_real,
                 'ae_loss_fake': ae_loss_fake,
                 'mmd': mmd,
+                'fm_loss': first_moment_loss,
                 'keeping_probs': keeping_probs,
             })
 
@@ -554,6 +642,15 @@ with sv.managed_session() as sess:
                 dropout_pr: 1.0})
 
         # Run full training step on pre-fetched data and simulations.
+        switch = 0
+        if step < switch:
+            lambda_fm_setting_ = 0.0
+            lambda_mmd_d_setting_ = 0.0
+            lambda_mmd_g_setting_ = 0.0
+        else:
+            lambda_fm_setting_ = lambda_fm_setting
+            lambda_mmd_d_setting_ = lambda_mmd_d_setting
+            lambda_mmd_g_setting_ = lambda_mmd_g_setting
         result = sess.run(fetch_dict,
             feed_dict={
                 x_pix: batch_train,
@@ -563,9 +660,11 @@ with sv.managed_session() as sess:
                 x_prop0: np.mean(np.round(x_pred_pr0)),
                 g_prop0: np.mean(np.round(g_pred_pr0)),
                 classifier_accuracy: user_acc,
-                lambda_mmd: lambda_mmd_setting, 
-                lambda_ae: 1.0,
-                lambda_fm: 0.0,
+                lambda_ae: lambda_ae_setting,
+                lambda_ae_fake: lambda_ae_fake_setting,
+                lambda_mmd_d: lambda_mmd_d_setting_, 
+                lambda_mmd_g: lambda_mmd_g_setting_, 
+                lambda_fm: lambda_fm_setting_,
                 dropout_pr: 1.0,
                 weighted: weighted_})
 
@@ -576,15 +675,17 @@ with sv.managed_session() as sess:
             ae_loss_real_ = result['ae_loss_real']
             ae_loss_fake_ = result['ae_loss_fake']
             mmd_ = result['mmd']
-            print(('[{}/{}] LOSSES: ae_real/fake: {:.6f}, {:.6f} '
-                'mmd: {:.6f}').format(
-                    step, max_step, ae_loss_real_, ae_loss_fake_, mmd_))
+            fm_loss_ = result['fm_loss']
+            print(('[{}/{}] LOSSES: ae_real/fake: {:.4f}, {:.4f} '
+                'mmd: {:.4f}, fm: {:.4f}').format(
+                    step, max_step, ae_loss_real_ * lambda_ae_setting, ae_loss_fake_, mmd_ * lambda_mmd_g_setting, fm_loss_ * lambda_fm_setting))
         if step % (save_step) == 0:
+            print(str(config))
             z_rand= np.random.normal(0, 1, size=(batch_size, z_dim))
             gen_rand = generate(
-                z_rand, model_dir, idx='rand'+str(step))
+                z_rand, log_dir, idx='rand'+str(step))
             gen_fixed = generate(
-                z_fixed, model_dir, idx='fix'+str(step))
+                z_fixed, log_dir, idx='fix'+str(step))
         if step % lr_update_step == lr_update_step - 1:
             sess.run([g_lr_update, d_lr_update])
 
