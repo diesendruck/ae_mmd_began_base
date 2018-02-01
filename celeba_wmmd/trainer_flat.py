@@ -72,17 +72,18 @@ parser.add_argument('--scale_size', type=int, default=64, choices=[64])
 parser.add_argument('--optimizer', type=str, default='rmsprop')
 parser.add_argument('--train_ratio', type=str, default='1090')
 # Begin commonly tuned.
+parser.add_argument('--feature_name', type=str, default='Eyeglasses')
 parser.add_argument('--on_encodings', type=str2bool, default=True)
-parser.add_argument('--z_dim', type=int,                  default=50)
+parser.add_argument('--z_dim', type=int,                  default=64)
 parser.add_argument('--batch_size', type=int,             default=16)
-parser.add_argument('--num_conv_filters', type=int,       default=100)
+parser.add_argument('--num_conv_filters', type=int,       default=50)
 parser.add_argument('--lambda_ae_setting', type=float,    default=1.0)  # focus: ae
 parser.add_argument('--lambda_ae_fake_setting', type=float, default=0.0)  # focus: ae_loss_fake
-parser.add_argument('--lambda_fm_setting', type=float,    default=2500.0)  # focus: fm 
+parser.add_argument('--lambda_fm_setting', type=float,    default=0.0)  # focus: fm 
 parser.add_argument('--lambda_mmd_d_setting', type=float, default=1000.)  # focus: mmd 
 parser.add_argument('--lambda_mmd_g_setting', type=float, default=1000.)  # focus: mmd 
 parser.add_argument('--lr', type=float,                   default=8e-5)
-parser.add_argument('--lambda_glr_factor', type=float,    default=2.0)
+parser.add_argument('--lambda_glr_factor', type=float,    default=1.0)
 parser.add_argument('--lambda_clr_factor', type=float,    default=1.0)
 parser.add_argument('--lr_update_step', type=int,         default=7500)
 parser.add_argument('--lr_lower_boundary', type=float,    default=2e-6)
@@ -109,6 +110,7 @@ n_user = config.n_user
 batch_size = config.batch_size
 num_conv_filters = config.num_conv_filters
 on_encodings = config.on_encodings
+feature_name = config.feature_name
 z_dim = config.z_dim
 lr = config.lr
 lambda_glr_factor = config.lambda_glr_factor
@@ -207,7 +209,7 @@ def load_labels(label_file, label_choices=None):
 label_file = os.path.join(data_path, 'list_attr_celeba.txt')
 labels_, label_names, file_to_idx = load_labels(label_file)
 idx_to_file = {v: i for i, v in file_to_idx.iteritems()}
-feature_id = label_names.index('Eyeglasses')
+feature_id = label_names.index(feature_name)
 labels = np.array(  # Binary one-hot labels.
     [[1.0, 0.0] if lab[feature_id] == 1 else [0.0, 1.0] for lab in labels_]) 
 
@@ -239,12 +241,12 @@ user_paths_0 = [pa for pa, gi in user_paths_and_global_indices if \
 user_paths_1 = [pa for pa, gi in user_paths_and_global_indices if \
     labels[gi][0] != 1]
 assert n_user / 2 < len(user_paths_0) and n_user / 2 < len(user_paths_1), \
-    'asking for more than we have'
+    'Asking for more than we have in USER set.'
 user_paths = np.concatenate((
     np.random.choice(user_paths_0, n_user / 2),
     np.random.choice(user_paths_1, n_user / 2)))
 np.random.shuffle(user_paths)
-print('Built USER set. Proportion class0 = {}, n = {}'.format(
+print('\n\nBuilt USER set. Proportion class0 = {}, n = {}'.format(
     0.5, len(user_paths)))
 
 # Assemble training paths for given train ratio.
@@ -253,12 +255,17 @@ train_paths_0 = [pa for pa, gi in train_paths_and_global_indices if \
 train_paths_1 = [pa for pa, gi in train_paths_and_global_indices if \
     labels[gi][0] != 1]
 class1_multiplier = train_ratio[1] / float(train_ratio[0])
-train_num_paths_1_desired = int(class1_multiplier * len(train_paths_0))
-assert train_num_paths_1_desired < len(train_paths_1), \
-    'asking for more of class 1 than we have'
-train_paths = np.concatenate((
-    train_paths_0,
-    np.random.choice(train_paths_1, train_num_paths_1_desired)))
+class0_multiplier = train_ratio[0] / float(train_ratio[1])
+train_num_paths_1_desired = int(class1_multiplier * len(train_paths_0))  # Used if c1 big enough.
+train_num_paths_0_desired = int(class0_multiplier * len(train_paths_1))  # Used if c1 not big enough.
+if train_num_paths_1_desired < len(train_paths_1):
+    # Subset class1.
+    train_paths_1 = np.random.choice(train_paths_1, train_num_paths_1_desired)
+    train_paths = np.concatenate((train_paths_0, train_paths_1))
+else:
+    # Subset class0.
+    train_paths_0 = np.random.choice(train_paths_0, train_num_paths_0_desired)
+    train_paths = np.concatenate((train_paths_0, train_paths_1))
 np.random.shuffle(train_paths)
 print('Built TRAIN set. Proportion class0 = {}, n = {}'.format(
     len(train_paths_0) / float(len(train_paths)), len(train_paths)))
@@ -270,7 +277,7 @@ test_paths_1 = [pa for pa, gi in test_paths_and_global_indices if \
     labels[gi][0] != 1]
 test_paths = np.concatenate((test_paths_0, test_paths_1))
 np.random.shuffle(test_paths)
-print('Built TEST set. Proportion class0 = {}, n = {}'.format(
+print('Built TEST set. Proportion class0 = {}, n = {}\n\n'.format(
     len(test_paths_0) / float(len(test_paths)), len(test_paths)))
 
 # Set up queues for each split.
@@ -482,18 +489,12 @@ ae_loss_real = tf.cond(
             tf.reduce_sum(tf.square(AE_x - x), [1, 2, 3]), [-1, 1]))),
     lambda: tf.reduce_mean(tf.square(AE_x - x)))
 ae_loss_real_unweighted = tf.reduce_mean(tf.square(AE_x - x))
-ae_loss_fake = tf.reduce_mean(tf.square(AE_g - g))
-ae_loss = ae_loss_real + lambda_ae_fake * ae_loss_fake
-#d_loss = (
-#    lambda_ae * ae_loss -
-#    lambda_mmd * mmd -
-#    lambda_fm * first_moment_loss)
-#g_loss = (
-#    lambda_mmd * mmd +
-#    lambda_fm * first_moment_loss)
+ae_loss_fake_unweighted = tf.reduce_mean(tf.square(AE_g - g))
+ae_loss = ae_loss_real + lambda_ae_fake * ae_loss_fake_unweighted
+controlled_mmd_d = tf.minimum(ae_loss, lambda_mmd_d * mmd)
 d_loss = (
     lambda_ae * ae_loss -
-    lambda_mmd_d * mmd -
+    controlled_mmd_d -
     lambda_fm * first_moment_loss)
 g_loss = (
     lambda_mmd_g * mmd +
@@ -533,9 +534,9 @@ summary_op = tf.summary.merge([
     tf.summary.image("d_AE_x", AE_x_pix, max_outputs=num_log_samples),
     tf.summary.scalar("loss/d_loss", d_loss),
     tf.summary.scalar("loss/first_moment_loss", first_moment_loss),
-    tf.summary.scalar("loss/ae_loss_real", ae_loss_real),
-    tf.summary.scalar("loss/unw_ae_loss_real", ae_loss_real_unweighted),
-    tf.summary.scalar("loss/unw_ae_loss_fake", ae_loss_fake),
+    tf.summary.scalar("loss/ae_loss_real_w", ae_loss_real),
+    tf.summary.scalar("loss/ae_loss_real_u", ae_loss_real_unweighted),
+    tf.summary.scalar("loss/ae_loss_fake_u", ae_loss_fake_unweighted),
     tf.summary.scalar("loss/mmd_u", mmd_unweighted),
     tf.summary.scalar("loss/mmd_w", mmd_weighted),
     tf.summary.scalar("misc/d_lr", d_lr),
@@ -602,7 +603,7 @@ with sv.managed_session() as sess:
                 classifier_accuracy, classifier_accuracy_test],
             feed_dict={
                 dropout_pr: 1.0})
-            print('\nstep {},\nclassifer_acc user/test {:.4f}, {:.4f}'.format(
+            print('classifier_acc user/test {:.3f}, {:.3f}'.format(
                 step, user_acc, test_acc))
 
         # TRAIN GAN.
@@ -610,14 +611,16 @@ with sv.managed_session() as sess:
         fetch_dict = {
             'd_optim': d_optim,
             'g_optim': g_optim,
+            'ae_loss_real_unweighted': ae_loss_real_unweighted,
+            'ae_loss_fake_unweighted': ae_loss_fake_unweighted,
         }
         if step % log_step == 0:
             fetch_dict.update({
                 'summary': summary_op,
                 'ae_loss_real': ae_loss_real,
-                'ae_loss_fake': ae_loss_fake,
                 'mmd': mmd,
-                'fm_loss': first_moment_loss,
+                'controlled_mmd_d': controlled_mmd_d,
+                'first_moment_loss': first_moment_loss,
                 'keeping_probs': keeping_probs,
             })
 
@@ -642,15 +645,15 @@ with sv.managed_session() as sess:
                 dropout_pr: 1.0})
 
         # Run full training step on pre-fetched data and simulations.
-        switch = 0
-        if step < switch:
-            lambda_fm_setting_ = 0.0
-            lambda_mmd_d_setting_ = 0.0
-            lambda_mmd_g_setting_ = 0.0
-        else:
-            lambda_fm_setting_ = lambda_fm_setting
-            lambda_mmd_d_setting_ = lambda_mmd_d_setting
-            lambda_mmd_g_setting_ = lambda_mmd_g_setting
+        # If ae_fake is much worse than ae_real, drop adversarial component of d_loss.
+        #if step > 0 and ae_loss_fake_unweighted_ > 2 * ae_loss_real_unweighted_:
+        #    lambda_mmd_d_setting_ = step 
+        #    lambda_mmd_g_setting_ = lambda_mmd_g_setting
+        #else:
+        #    lambda_mmd_d_setting_ = lambda_mmd_d_setting
+        #    lambda_mmd_g_setting_ = lambda_mmd_g_setting
+        lambda_mmd_d_setting_ = step 
+        lambda_mmd_g_setting_ = lambda_mmd_g_setting
         result = sess.run(fetch_dict,
             feed_dict={
                 x_pix: batch_train,
@@ -664,21 +667,28 @@ with sv.managed_session() as sess:
                 lambda_ae_fake: lambda_ae_fake_setting,
                 lambda_mmd_d: lambda_mmd_d_setting_, 
                 lambda_mmd_g: lambda_mmd_g_setting_, 
-                lambda_fm: lambda_fm_setting_,
+                lambda_fm: lambda_fm_setting,
                 dropout_pr: 1.0,
                 weighted: weighted_})
+
+        ae_loss_real_unweighted_ = result['ae_loss_real_unweighted']
+        ae_loss_fake_unweighted_ = result['ae_loss_fake_unweighted']
 
         # Log and save as needed.
         if step % log_step == 0:
             summary_writer.add_summary(result['summary'], step)
             summary_writer.flush()
             ae_loss_real_ = result['ae_loss_real']
-            ae_loss_fake_ = result['ae_loss_fake']
             mmd_ = result['mmd']
-            fm_loss_ = result['fm_loss']
-            print(('[{}/{}] LOSSES: ae_real/fake: {:.4f}, {:.4f} '
-                'mmd: {:.4f}, fm: {:.4f}').format(
-                    step, max_step, ae_loss_real_ * lambda_ae_setting, ae_loss_fake_, mmd_ * lambda_mmd_g_setting, fm_loss_ * lambda_fm_setting))
+            controlled_mmd_d_ = result['controlled_mmd_d']
+            first_moment_loss_ = result['first_moment_loss']
+            print(('\n\n[{}/{}] RAW losses: ae_real, real_u, fake_u: {:.3f}, {:.3f}, {:.3f} | '
+                'mmd: {:.3f} | fm: {:.3f}').format(
+                    step, max_step, ae_loss_real_, ae_loss_real_unweighted_,
+                    ae_loss_fake_unweighted_, mmd_, first_moment_loss_))
+            print(('D_losses: ae_real: {:.3f} | mmd_d: {:.3f}').format(
+                    ae_loss_real_, controlled_mmd_d_))
+            print(('G_losses: mmd_g: {:.3f}').format(mmd_ * lambda_mmd_g_setting_))
         if step % (save_step) == 0:
             print(str(config))
             z_rand= np.random.normal(0, 1, size=(batch_size, z_dim))
