@@ -120,6 +120,28 @@ def upscale(x, scale, data_format):
 # BEGIN section from Tensorflow website. For MNIST classification.
 # https://github.com/tensorflow/tensorflow/blob/r1.4/tensorflow/examples/
 #   tutorials/mnist/mnist_deep.py
+def Classifier_CNN2(x, input_channel, repeat_num, num_filters,
+        data_format, reuse):
+    with tf.variable_scope("classifier_cnn2", reuse=reuse) as vs_enc:
+        x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
+                        data_format=data_format)
+
+        start_num_filters = num_filters * 1.
+        for idx in range(repeat_num):
+            channel_num = num_filters * (idx + 1)
+            x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu,
+                            data_format=data_format)
+            if deep:
+                x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu,
+                                data_format=data_format)
+            if idx < repeat_num - 1:
+                x = slim.conv2d(x, channel_num, 3, 2, activation_fn=tf.nn.elu,
+                                data_format=data_format)
+
+        x = tf.reshape(x, [-1, np.prod([8, 8, channel_num])])
+        y_logits = slim.fully_connected(x, 2, activation_fn=None)
+        y_probs = tf.nn.softmax(y_logits)
+
 def classifier_CNN(x, dropout_pr, reuse):
     """classifier_CNN builds the graph for a deep net for classifying digits.
     Args:
@@ -227,13 +249,13 @@ def classifier_NN_enc(x, dropout_pr, reuse):
     """
     z_dim = x.get_shape().as_list()[1]
     with tf.variable_scope('mnist_classifier', reuse=reuse) as vs:
-        x = slim.fully_connected(x, 1024, activation_fn=tf.nn.elu, scope='fc1')
+        x = slim.fully_connected(x, 2 * z_dim, activation_fn=tf.nn.elu, scope='fc1')
         x = slim.dropout(x, dropout_pr, scope='drop1')
-        x = slim.fully_connected(x, 1024, activation_fn=tf.nn.elu, scope='fc2')
+        x = slim.fully_connected(x, 2 * z_dim, activation_fn=tf.nn.elu, scope='fc2')
         x = slim.dropout(x, dropout_pr, scope='drop2')
-        #x = slim.fully_connected(x, 512, activation_fn=tf.nn.elu, scope='fc3')
+        #x = slim.fully_connected(x, z_dim, activation_fn=tf.nn.elu, scope='fc3')
         #x = slim.dropout(x, dropout_pr, scope='drop3')
-        x = slim.fully_connected(x, 32, activation_fn=tf.nn.elu, scope='fc4')
+        #x = slim.fully_connected(x, 32, activation_fn=tf.nn.elu, scope='fc4')
         #x = slim.dropout(x, dropout_pr, scope='drop4')
         y_logits = slim.fully_connected(x, 2, activation_fn=None, scope='fc5')
         y_probs = tf.nn.softmax(y_logits)
