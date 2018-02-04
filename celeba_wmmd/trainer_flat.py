@@ -4,8 +4,12 @@ import argparse
 import json
 import numpy as np
 import os
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import pdb
 import scipy.misc
+import sys
 from scipy import misc
 import StringIO
 import time
@@ -65,7 +69,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--data_path', type=str,
         default='../../began/BEGAN-tensorflow/data/celeba')
 parser.add_argument('--data_format', type=str, default='NCHW')
-parser.add_argument('--tag', type=str, default='test')
+parser.add_argument('--tag', type=str, default=None)
 parser.add_argument('--dataset', type=str, default='celeba')
 parser.add_argument('--channel', type=int, default=3, choices=[3])
 parser.add_argument('--scale_size', type=int, default=64, choices=[64])
@@ -96,6 +100,7 @@ parser.add_argument('--save_step', type=int, default=1000)
 parser.add_argument('--max_step', type=int, default=500000)
 parser.add_argument('--use_gpu', type=str2bool, default=True)
 parser.add_argument('--num_log_samples', type=int, default=7)
+parser.add_argument('--model_to_load', type=str, default=None)
 
 config = parser.parse_args()
 data_path = config.data_path
@@ -129,7 +134,9 @@ save_step = config.save_step
 max_step = config.max_step
 use_gpu = config.use_gpu
 num_log_samples = config.num_log_samples
-if tag == 'test':
+model_to_load = config.model_to_load
+checkpoint_dir = 'logs'
+if tag is None:
     log_dir = os.path.join('logs', time.strftime("%Y%m%d-%H%M%S"))
 else:
     log_dir = os.path.join('logs', config.tag)
@@ -150,6 +157,25 @@ g_lr_update = tf.assign(g_lr, tf.maximum(g_lr * 0.5, lr_lower_boundary),
 c_lr_update = tf.assign(c_lr, tf.maximum(c_lr * 0.5, lr_lower_boundary),
         name='c_lr_update')
 repeat_num = int(np.log2(scale_size)) - 2
+
+
+def load_checkpoint(saver, sess, checkpoint_dir, model_to_load):
+    import re
+    print(" [*] Reading checkpoints...")
+    assert model_to_load is not None, 'model_to_load is None. Define it in args.'
+    checkpoint_dir = os.path.join(checkpoint_dir, model_to_load)
+
+    ckpt = tf.train.get_checkpoint_state(checkpoint_dir)
+    if ckpt and ckpt.model_checkpoint_path:
+        ckpt_name = os.path.basename(ckpt.model_checkpoint_path)
+        saver.restore(sess, os.path.join(checkpoint_dir, ckpt_name))
+        #counter = int(next(re.finditer("(\d+)(?!.*\d)",ckpt_name)).group(0))
+        counter = int(''.join([i for i in ckpt_name if i.isdigit()]))
+        print(" [*] Success to read {}".format(ckpt_name))
+        return True, counter
+    else:
+        print(" [*] Failed to find a checkpoint")
+        return False, 0
 
 
 # Set up all queues.
@@ -241,7 +267,8 @@ user_paths_0 = [pa for pa, gi in user_paths_and_global_indices if \
 user_paths_1 = [pa for pa, gi in user_paths_and_global_indices if \
     labels[gi][0] != 1]
 assert n_user / 2 < len(user_paths_0) and n_user / 2 < len(user_paths_1), \
-    'Asking for more than we have in USER set.'
+    'Asking for more than we have in USER set. Only {} in cl0.'.format(
+            len(user_paths_0))
 user_paths = np.concatenate((
     np.random.choice(user_paths_0, n_user / 2),
     np.random.choice(user_paths_1, n_user / 2)))
@@ -347,8 +374,7 @@ num_combos_yy = tf.to_float(gen_num * (gen_num - 1) / 2)
 
 #### Begin: build_classifier() #################################################
 # Build classifier, and get probabilities of keeping.
-c_images_pix = user_loader
-c_labels = user_label_loader
+c_images_pix, c_labels = user_loader, user_label_loader
 c_images = norm_img(c_images_pix)
 
 # Compute the data probabilities used in WMMD.
@@ -478,6 +504,8 @@ lambda_mmd_g = tf.Variable(0., trainable=False, name='lambda_mmd_g')
 lambda_ae = tf.Variable(0., trainable=False, name='lambda_ae')
 lambda_ae_fake = tf.Variable(0., trainable=False, name='lambda_ae_fake')
 lambda_fm = tf.Variable(0., trainable=False, name='lambda_fm')
+lambda_ce = tf.Variable(1., trainable=False, name='lambda_ce')
+alpha_ae_loss = tf.Variable(1., trainable=False, name='alpha_ae_loss')
 fm1 = tf.reduce_mean(ge, axis=0) - tf.reduce_mean(xe, axis=0)
 fm2 = tf.nn.relu(fm1)
 fm3 = tf.reduce_mean(fm2)
@@ -491,9 +519,16 @@ ae_loss_real = tf.cond(
 ae_loss_real_unweighted = tf.reduce_mean(tf.square(AE_x - x))
 ae_loss_fake_unweighted = tf.reduce_mean(tf.square(AE_g - g))
 ae_loss = ae_loss_real + lambda_ae_fake * ae_loss_fake_unweighted
-controlled_mmd_d = tf.minimum(ae_loss, lambda_mmd_d * mmd)
+
+controlled_ae_loss = (
+    alpha_ae_loss * ae_loss_real_unweighted +
+    (1. - alpha_ae_loss) * ae_loss_real +
+    lambda_ae_fake * ae_loss_fake_unweighted +
+    0 * lambda_ce * cross_entropy)
+controlled_mmd_d = lambda_mmd_d * mmd * (200. / ae_loss_real)
+
 d_loss = (
-    lambda_ae * ae_loss -
+    controlled_ae_loss -
     controlled_mmd_d -
     lambda_fm * first_moment_loss)
 g_loss = (
@@ -502,12 +537,15 @@ g_loss = (
 
 # Optimizer nodes.
 if optimizer == 'adam':
+    ae_opt = tf.train.AdamOptimizer(d_lr)
     d_opt = tf.train.AdamOptimizer(d_lr)
     g_opt = tf.train.AdamOptimizer(g_lr)
 elif optimizer == 'rmsprop':
+    ae_opt = tf.train.RMSPropOptimizer(d_lr)
     d_opt = tf.train.RMSPropOptimizer(d_lr)
     g_opt = tf.train.RMSPropOptimizer(g_lr)
 elif optimizer == 'sgd':
+    ae_opt = tf.train.GradientDescentOptimizer(d_lr)
     d_opt = tf.train.GradientDescentOptimizer(d_lr)
     g_opt = tf.train.GradientDescentOptimizer(g_lr)
 
@@ -522,6 +560,16 @@ if 1:
     d_grads = enc_grads_clipped + dec_grads
     d_vars = enc_vars + dec_vars
     d_optim = d_opt.apply_gradients(zip(d_grads, d_vars))
+
+    ae_enc_grads, ae_enc_vars = zip(*ae_opt.compute_gradients(
+        ae_loss_real_unweighted, var_list=d_var_enc))
+    ae_dec_grads, ae_dec_vars = zip(*ae_opt.compute_gradients(
+        ae_loss_real_unweighted, var_list=d_var_dec))
+    ae_enc_grads_clipped = tuple(
+        [tf.clip_by_value(grad, -0.01, 0.01) for grad in ae_enc_grads])
+    ae_grads = ae_enc_grads_clipped + ae_dec_grads
+    ae_vars = ae_enc_vars + ae_dec_vars
+    ae_optim = ae_opt.apply_gradients(zip(ae_grads, ae_vars))
 else:
     d_optim = d_opt.minimize(d_loss, var_list=ae_vars)
 g_optim = g_opt.minimize(
@@ -551,6 +599,8 @@ summary_op = tf.summary.merge([
 # End: BUILD MODEL
 ###############################################################################
 
+bytes_in_use = tf.contrib.memory_stats.MaxBytesInUse()
+bytes_max = tf.contrib.memory_stats.BytesLimit()
 
 init_op = tf.global_variables_initializer()
 
@@ -565,12 +615,14 @@ sv = tf.train.Supervisor(logdir=log_dir,
                         global_step=step,
                         ready_for_local_init_op=None)
 
-gpu_options = tf.GPUOptions(allow_growth=True)
+#gpu_options = tf.GPUOptions(allow_growth=True)
+gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.5)
 sess_config = tf.ConfigProto(allow_soft_placement=True,
                             gpu_options=gpu_options)
 
 #sess = sv.prepare_or_wait_for_session(config=sess_config)
-with sv.managed_session() as sess:
+#with sv.managed_session() as sess:
+with sv.prepare_or_wait_for_session(config=sess_config) as sess:
     sv.start_standard_services(sess)
     coord = sv.coord
     user_qr_f.create_threads(sess, coord=coord, start=True)
@@ -589,11 +641,45 @@ with sv.managed_session() as sess:
             print("[*] Samples saved: {}".format(path))
         return g_pix_
 
+    # Pretrain unweighted autoencoder on data.
+    pretrain = 1
+    if pretrain and not model_to_load:
+        ae_pretrain_iters = 1000
+        c_pretrain_iters = 1000
+        for ae_iter in range(1000):
+            sess.run(ae_optim)
+            if ae_iter % 100 == 0:
+                print('iter{} ae_loss_real_unweighted: {}'.format(
+                    ae_iter, sess.run(ae_loss_real_unweighted)))
+
+        for c_iter in range(1000):
+            sess.run(c_optim, {dropout_pr: 0.5})
+            if c_iter % 100 == 0:
+                user_acc, test_acc = sess.run([
+                    classifier_accuracy, classifier_accuracy_test],
+                feed_dict={
+                    dropout_pr: 1.0})
+                print('classifier_acc user/test {:.3f}, {:.3f}'.format(
+                    user_acc, test_acc))
+        saver.save(sess, log_dir, global_step=ae_pretrain_iters + c_pretrain_iters)
+        sys.exit('Finished pretraining.')
+
+    if model_to_load is not None:
+        could_load, checkpoint_counter = load_checkpoint(
+            saver, sess, checkpoint_dir, model_to_load)
+        if could_load:
+            counter = checkpoint_counter
+            print(" [*] Load SUCCESS")
+        else:
+            print(" [!] Load failed...")
+        pdb.set_trace()
+
+
     # Begin: train() ##########################################################
     z_fixed = np.random.normal(0, 1, size=(batch_size, z_dim))
-
     # Train generator.
     for step in trange(0, max_step):
+
         # TRAIN CLASSIFIER.
         sess.run(c_optim, {dropout_pr: 0.5})
 
@@ -604,21 +690,22 @@ with sv.managed_session() as sess:
             feed_dict={
                 dropout_pr: 1.0})
             print('classifier_acc user/test {:.3f}, {:.3f}'.format(
-                step, user_acc, test_acc))
+                user_acc, test_acc))
 
         # TRAIN GAN.
         # Always run optim nodes, and sometimes, some logs.
         fetch_dict = {
             'd_optim': d_optim,
             'g_optim': g_optim,
-            'ae_loss_real_unweighted': ae_loss_real_unweighted,
-            'ae_loss_fake_unweighted': ae_loss_fake_unweighted,
         }
         if step % log_step == 0:
             fetch_dict.update({
                 'summary': summary_op,
                 'ae_loss_real': ae_loss_real,
+                'ae_loss_real_unweighted': ae_loss_real_unweighted,
+                'ae_loss_fake_unweighted': ae_loss_fake_unweighted,
                 'mmd': mmd,
+                'controlled_ae_loss': controlled_ae_loss,
                 'controlled_mmd_d': controlled_mmd_d,
                 'first_moment_loss': first_moment_loss,
                 'keeping_probs': keeping_probs,
@@ -626,6 +713,21 @@ with sv.managed_session() as sess:
 
         weighted_ = True 
         batch_train = sess.run(x_pix)
+
+        test_label_alignment = 0
+        if test_label_alignment:
+            # Save image and print labels
+            #imgs, lbls = sess.run([user_loader, user_label_loader])
+            imgs, lbls = sess.run([c_images_pix, c_labels])
+            i, l = imgs, lbls
+            save_image(i[0:1,:,:,:].transpose([0, 2, 3, 1]), os.path.join(log_dir, 't0.png'))
+            save_image(i[1:2,:,:,:].transpose([0, 2, 3, 1]), os.path.join(log_dir, 't1.png'))
+            save_image(i[2:3,:,:,:].transpose([0, 2, 3, 1]), os.path.join(log_dir, 't2.png'))
+            save_image(i[3:4,:,:,:].transpose([0, 2, 3, 1]), os.path.join(log_dir, 't3.png'))
+            print(lbls[:4,:])
+            pdb.set_trace()
+            sys.exit()
+        
         batch_z = np.random.normal(0, 1, size=(batch_size, z_dim))
         # Pre-fetch data and simulations, and normalize for classification.
         x_for_pr0 = batch_train
@@ -645,14 +747,8 @@ with sv.managed_session() as sess:
                 dropout_pr: 1.0})
 
         # Run full training step on pre-fetched data and simulations.
-        # If ae_fake is much worse than ae_real, drop adversarial component of d_loss.
-        #if step > 0 and ae_loss_fake_unweighted_ > 2 * ae_loss_real_unweighted_:
-        #    lambda_mmd_d_setting_ = step 
-        #    lambda_mmd_g_setting_ = lambda_mmd_g_setting
-        #else:
-        #    lambda_mmd_d_setting_ = lambda_mmd_d_setting
-        #    lambda_mmd_g_setting_ = lambda_mmd_g_setting
-        lambda_mmd_d_setting_ = step 
+        alpha_ae_loss_ = max(0., 1. - step / 5000.)
+        lambda_mmd_d_setting_ = lambda_mmd_d_setting
         lambda_mmd_g_setting_ = lambda_mmd_g_setting
         result = sess.run(fetch_dict,
             feed_dict={
@@ -668,18 +764,20 @@ with sv.managed_session() as sess:
                 lambda_mmd_d: lambda_mmd_d_setting_, 
                 lambda_mmd_g: lambda_mmd_g_setting_, 
                 lambda_fm: lambda_fm_setting,
+                alpha_ae_loss: alpha_ae_loss_,
                 dropout_pr: 1.0,
                 weighted: weighted_})
 
-        ae_loss_real_unweighted_ = result['ae_loss_real_unweighted']
-        ae_loss_fake_unweighted_ = result['ae_loss_fake_unweighted']
 
         # Log and save as needed.
         if step % log_step == 0:
             summary_writer.add_summary(result['summary'], step)
             summary_writer.flush()
             ae_loss_real_ = result['ae_loss_real']
+            ae_loss_real_unweighted_ = result['ae_loss_real_unweighted']
+            ae_loss_fake_unweighted_ = result['ae_loss_fake_unweighted']
             mmd_ = result['mmd']
+            controlled_ae_loss_ = result['controlled_ae_loss']
             controlled_mmd_d_ = result['controlled_mmd_d']
             first_moment_loss_ = result['first_moment_loss']
             print(('\n\n[{}/{}] RAW losses: ae_real, real_u, fake_u: {:.3f}, {:.3f}, {:.3f} | '
@@ -687,7 +785,7 @@ with sv.managed_session() as sess:
                     step, max_step, ae_loss_real_, ae_loss_real_unweighted_,
                     ae_loss_fake_unweighted_, mmd_, first_moment_loss_))
             print(('D_losses: ae_real: {:.3f} | mmd_d: {:.3f}').format(
-                    ae_loss_real_, controlled_mmd_d_))
+                    controlled_ae_loss_, controlled_mmd_d_))
             print(('G_losses: mmd_g: {:.3f}').format(mmd_ * lambda_mmd_g_setting_))
         if step % (save_step) == 0:
             print(str(config))
