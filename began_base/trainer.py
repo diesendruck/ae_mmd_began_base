@@ -596,7 +596,7 @@ class Trainer(object):
         # Ensure that training mix has zero as target.
         prop0 = int(mix[:2])
         prop1 = int(mix[2:])
-        self.config.pct = [prop0, prop1]
+        #self.config.pct = [prop0, prop1]
         n0 = int(n * prop0 / 100.)
         n1 = int(n * prop1 / 100.)
 
@@ -609,7 +609,7 @@ class Trainer(object):
             # Fetch 01s and apportion according to mix percent.
             d = zipped_images_and_labels
             zero_ind = [i for i,v in enumerate(d) if v[1][0] == 1]
-            one_ind = [i for i,v in enumerate(d) if v[1][1] == 1]
+            one_ind = [i for i,v in enumerate(d) if v[1][0] != 1]
             assert n0 <= len(zero_ind) and n1 <= len(one_ind), (
                 'Asking for {} zeros and {} ones, but have {} zeros and {} ones'
                 ).format(n0, n1, len(zero_ind), len(one_ind))
@@ -626,7 +626,7 @@ class Trainer(object):
             #    [len(images), self.channel, self.scale_size, self.scale_size])
             images = np.reshape(images, [len(images), -1])  # [n, 784]
             #images = convert_01_to_n11(images)
-            labels = [[1.0, 0.0] if i.tolist().index(1) == 0 else [0.0, 1.0]
+            labels = [[1.0, 0.0] if i.tolist().index(1.0) == 0 else [0.0, 1.0]
                 for i in labels]
             return np.array(images), np.array(labels)
 

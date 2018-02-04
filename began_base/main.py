@@ -29,10 +29,12 @@ def main(config):
     #dir_loader = 'train8020'
     #dir_loader = 'train6040'
     #dir_loader = 'train4060'
-    dir_loader = 'train2080'
+    #dir_loader = 'train2080'
     #dir_loader = 'train1090'
     #dir_loader = 'train0510'
     #dir_loader = 'trainBig0510'
+    dir_loader = 'train_all_1090'
+    dir_loader = 'train_small_5050'
     config.pct = [int(dir_loader[-4:][:2]), int(dir_loader[-4:][2:])]
 
     dir_target = 'train5050'
