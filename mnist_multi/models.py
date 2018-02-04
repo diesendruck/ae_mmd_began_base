@@ -10,7 +10,7 @@ def GeneratorCNN(z, num_filters, channels_out, repeat_num, data_format, reuse):
         num_output = int(np.prod([7, 7, num_filters]))
         x = slim.fully_connected(z, num_output, activation_fn=None)
         x = reshape(x, 7, 7, num_filters, data_format)
-        
+
         for idx in range(repeat_num):
             # NOTE: Following two lines originally listed twice -- now four times.
             x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
@@ -319,7 +319,7 @@ def bias_variable(shape):
 ###############################################################################
 
 
-def mnist_enc_NN(x, dropout_pr, reuse):
+def mnist_enc_NN(x, dropout_pr, reuse, n_classes):
     """mnist_enc_NN builds the graph for a deep net for classifying digits.
     Args:
       x: an input tensor with the dimensions (N_examples, z_dim), where z_dim is the
@@ -339,7 +339,7 @@ def mnist_enc_NN(x, dropout_pr, reuse):
         x = slim.dropout(x, dropout_pr, scope='drop2')
         x = slim.fully_connected(x, 32, activation_fn=tf.nn.elu, scope='fc3')
         x = slim.dropout(x, dropout_pr, scope='drop3')
-        y_logits = slim.fully_connected(x, 2, activation_fn=None, scope='fc4')
+        y_logits = slim.fully_connected(x, n_classes, activation_fn=None, scope='fc4')
         y_probs = tf.nn.softmax(y_logits)
 
         '''

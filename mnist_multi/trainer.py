@@ -61,14 +61,16 @@ def slerp(val, low, high):
 
 
 class Trainer(object):
-    def __init__(self, config, data_loader, data_loader_target):
+    def __init__(self, config, data_loader_source):
         self.config = config
         self.split = config.split
         self.data_path = config.data_path
-        self.data_loader = data_loader
-        self.data_loader_target = data_loader_target
+        self.data_loader_source = data_loader_source
         self.dataset = config.dataset
-
+        self.data_classes = config.data_classes
+        self.n_classes = len(self.data_classes)
+        self.source_mix = config.source_mix
+        self.target_mix = config.target_mix
         self.optimizer = config.optimizer
         self.batch_size = config.batch_size
         self.use_mmd= config.use_mmd
@@ -80,15 +82,9 @@ class Trainer(object):
         self.d_lr = tf.Variable(config.d_lr, name='d_lr', trainable=False)
         self.g_lr = tf.Variable(config.g_lr, name='g_lr', trainable=False)
         self.c_lr = tf.Variable(config.c_lr, name='c_lr', trainable=False)
-        self.d_lr_update = tf.assign(
-            self.d_lr, tf.maximum(self.d_lr * 0.5, config.lr_lower_boundary),
-            name='d_lr_update')
-        self.g_lr_update = tf.assign(
-            self.g_lr, tf.maximum(self.g_lr * 0.5, config.lr_lower_boundary),
-            name='g_lr_update')
-        self.c_lr_update = tf.assign(
-            self.c_lr, tf.maximum(self.c_lr * 0.5, config.lr_lower_boundary),
-            name='c_lr_update')
+        self.d_lr_update = tf.assign(self.d_lr, tf.maximum(self.d_lr * 0.5, config.lr_lower_boundary), name='d_lr_update')
+        self.g_lr_update = tf.assign(self.g_lr, tf.maximum(self.g_lr * 0.5, config.lr_lower_boundary), name='g_lr_update')
+        self.c_lr_update = tf.assign(self.c_lr, tf.maximum(self.c_lr * 0.5, config.lr_lower_boundary), name='c_lr_update')
 
         self.z_dim = config.z_dim
         self.num_conv_filters = config.num_conv_filters
@@ -99,8 +95,7 @@ class Trainer(object):
         self.use_gpu = config.use_gpu
         self.data_format = config.data_format
 
-        _, self.height, self.width, self.channel = \
-                get_conv_shape(self.data_loader, self.data_format)
+        _, self.height, self.width, self.channel = get_conv_shape(self.data_loader_source, self.data_format)
         self.scale_size = self.height 
         self.repeat_num = int(np.log2(self.height)) - 1  # 2 --> 1 for 28x28 mnist.
 
@@ -126,8 +121,7 @@ class Trainer(object):
                                 ready_for_local_init_op=None)
 
         gpu_options = tf.GPUOptions(allow_growth=True)
-        sess_config = tf.ConfigProto(allow_soft_placement=True,
-                                    gpu_options=gpu_options)
+        sess_config = tf.ConfigProto(allow_soft_placement=True, gpu_options=gpu_options)
 
         self.sess = sv.prepare_or_wait_for_session(config=sess_config)
 
@@ -139,7 +133,7 @@ class Trainer(object):
 
 
     def build_model(self):
-        self.x = self.data_loader
+        self.x = self.data_loader_source
         x = norm_img(self.x)  # Converts 256 to [-1, 1].
         self.z = tf.random_normal([tf.shape(x)[0], self.z_dim])
         self.weighted = tf.placeholder(tf.bool, name='weighted')
@@ -200,48 +194,36 @@ class Trainer(object):
 
         # Build mnist classification, and get probabilities of keeping.
         self.build_mnist_classifier()
-        self.x_pr0 = tf.Variable(tf.ones([self.batch_size, 1]),
-            trainable=False, name='x_pr0')
-        self.g_pr0 = tf.Variable(tf.ones([self.batch_size, 1]),
-            trainable=False, name='g_pr0')
-        self.x_prop0 = tf.Variable(0., trainable=False, name='x_prop0')
-        self.g_prop0 = tf.Variable(0., trainable=False, name='g_prop0')
-        self.x_prop0_pix = tf.Variable(0., trainable=False, name='x_prop0_pix')
-        self.g_prop0_pix = tf.Variable(0., trainable=False, name='g_prop0_pix')
-        self.classifier_accuracy_test = tf.Variable(0., trainable=False,
-            name='classifier_accuracy_test')
-        self.classifier_accuracy_test_pix = tf.Variable(0., trainable=False,
-            name='classifier_accuracy_test_pix')
-        self.x_normed_for_mnist_prediction = (tf.reshape(x,
-            [self.batch_size, -1]) + 1.)/ 2.  # Maps [-1, 1] to [0, 1].
-        self.g_normed_for_mnist_prediction = (tf.reshape(g,
-            [self.batch_size, -1]) + 1.)/ 2.  # Maps [-1, 1] to [0, 1].
+        self.x_pr_c = tf.Variable(tf.ones([self.batch_size, self.n_classes]), trainable=False, name='x_pr_c')
+        self.g_pr_c = tf.Variable(tf.ones([self.batch_size, self.n_classes]), trainable=False, name='g_pr_c')
+        self.x_prop_c = tf.Variable(tf.ones([self.n_classes]), trainable=False, name='x_prop_c')
+        self.g_prop_c = tf.Variable(tf.ones([self.n_classes]), trainable=False, name='g_prop_c')
+        self.x_prop_c_pix = tf.Variable(tf.ones([self.n_classes]), trainable=False, name='x_prop_c_pix')
+        self.g_prop_c_pix = tf.Variable(tf.ones([self.n_classes]), trainable=False, name='g_prop_c_pix')
+        self.classifier_accuracy_test = tf.Variable(0., trainable=False, name='classifier_accuracy_test')
+        self.classifier_accuracy_test_pix = tf.Variable(0., trainable=False, name='classifier_accuracy_test_pix')
+        self.x_normed_for_mnist_prediction = (tf.reshape(x, [self.batch_size, -1]) + 1.)/ 2.  # Maps [-1, 1] to [0, 1].
+        self.g_normed_for_mnist_prediction = (tf.reshape(g, [self.batch_size, -1]) + 1.)/ 2.  # Maps [-1, 1] to [0, 1].
 
-        thin_factor = 1. - float(min(self.config.pct)) / max(self.config.pct)
-        self.keeping_probs = 1. - thin_factor * tf.reshape(
-            self.x_pr0, [-1, 1])
+        min_thinning = min([self.source_mix[j] / self.target_mix[j] for j in range(len(self.data_classes))])
+        thin_factor = 1. - np.array([self.source_mix[j] / self.target_mix[j] for j in range(len(self.data_classes))]) * min_thinning
+        self.keeping_probs = 1. - tf.matmul(self.x_pr_c, thin_factor)
 
         keeping_probs_tiled = tf.tile(self.keeping_probs, [1, gen_num])
         # Autoencoder weights.
         self.p1_weights_ae = 1. / self.keeping_probs
-        self.p1_weights_ae_normed = (
-            self.p1_weights_ae / tf.reduce_sum(self.p1_weights_ae))
-        self.g_weights_ae = 1. / (
-            1. - thin_factor * tf.reshape(self.g_pr0, [-1, 1]))
-        self.g_weights_ae_normed = (
-            self.g_weights_ae / tf.reduce_sum(self.g_weights_ae))
+        self.p1_weights_ae_normed = self.p1_weights_ae / tf.reduce_sum(self.p1_weights_ae)
+        self.g_weights_ae = 1. / (1. - thin_factor * tf.reshape(self.g_pr_c, [-1, 1]))
+        self.g_weights_ae_normed = self.g_weights_ae / tf.reduce_sum(self.g_weights_ae)
+
         # MMD weights.
         self.p1_weights_xy = 1. / keeping_probs_tiled
-        self.p1_weights_xy_normed = (
-            self.p1_weights_xy / tf.reduce_sum(self.p1_weights_xy))
-        self.p1p2_weights_xx = (
-            self.p1_weights_xy * tf.transpose(self.p1_weights_xy))
-        self.p1p2_weights_xx_upper = (
-            tf.matrix_band_part(self.p1p2_weights_xx, 0, -1) -
-            tf.matrix_band_part(self.p1p2_weights_xx, 0, 0))
-        self.p1p2_weights_xx_upper_normed = (
-            self.p1p2_weights_xx_upper /
-            tf.reduce_sum(self.p1p2_weights_xx_upper))
+        self.p1_weights_xy_normed = self.p1_weights_xy / tf.reduce_sum(self.p1_weights_xy)
+        self.p1p2_weights_xx = self.p1_weights_xy * tf.transpose(self.p1_weights_xy)
+        self.p1p2_weights_xx_upper = (tf.matrix_band_part(self.p1p2_weights_xx, 0, -1)
+                                      - tf.matrix_band_part(self.p1p2_weights_xx, 0, 0))
+        self.p1p2_weights_xx_upper_normed = (self.p1p2_weights_xx_upper
+                                             / tf.reduce_sum(self.p1p2_weights_xx_upper))
         Kw_xx_upper = K_xx_upper * self.p1p2_weights_xx_upper_normed
         Kw_xy = K_xy * self.p1_weights_xy_normed
         num_combos_xy = tf.to_float(data_num * gen_num)
@@ -348,10 +330,10 @@ class Trainer(object):
             tf.summary.scalar("loss/mmd_w", self.mmd_weighted),
             tf.summary.scalar("misc/d_lr", self.d_lr),
             tf.summary.scalar("misc/g_lr", self.g_lr),
-            tf.summary.scalar("prop/x_prop0", self.x_prop0),
-            tf.summary.scalar("prop/g_prop0", self.g_prop0),
-            tf.summary.scalar("prop/x_prop0_pix_reference", self.x_prop0_pix),
-            tf.summary.scalar("prop/g_prop0_pix_reference", self.g_prop0_pix),
+            tf.summary.scalar("prop/x_prop_c", self.x_prop_c),
+            tf.summary.scalar("prop/g_prop_c", self.g_prop_c),
+            tf.summary.scalar("prop/x_prop0_pix_reference", self.x_prop_c_pix),
+            tf.summary.scalar("prop/g_prop0_pix_reference", self.g_prop_c_pix),
             tf.summary.scalar("prop/classifier_accuracy_test",
                 self.classifier_accuracy_test),
             tf.summary.scalar("prop/classifier_accuracy_test_pix_reference",
@@ -361,41 +343,31 @@ class Trainer(object):
         
     def build_mnist_classifier(self):
         # Classification data is [0, 1], from TF package.
-        self.c_images_01 = tf.placeholder(tf.float32, [None, 784])
-        self.c_labels = tf.placeholder(tf.float32, [None, 2])
+        self.c_images = tf.placeholder(tf.float32, [None, 784])
+        self.c_labels = tf.placeholder(tf.float32, [None, self.n_classes])
 
         # Compute the data probabilities used in WMMD.
         # NOTE: Whatever is chose here is used downstream in the model.
         #       Other pred/prob/entropy/optims are just for reporting.
         self.dropout_pr = tf.placeholder(tf.float32)
-        classify_on_pixels = 0
-        if classify_on_pixels:
-            self.label_pred, self.label_pred_pr, self.c_vars = mnistCNN(
-                self.c_images_01, self.dropout_pr, reuse=False)
-            self.label_pred_pr0 = self.label_pred_pr[:, 0]
-        else:
-            # Convert to [-1, 1] for autoencoder.
-            c = tf.reshape(self.c_images_01 * 2. - 1.,
-                [-1, self.channel, self.scale_size, self.scale_size])
-            _, c_enc, _, _ = AutoencoderCNN(
-                c, self.channel, self.z_dim, self.repeat_num,
-                self.num_conv_filters, self.data_format, reuse=True)
-            self.label_pred, self.label_pred_pr, self.c_vars = mnist_enc_NN(
-                c_enc, self.dropout_pr, reuse=False)
-            self.label_pred_pr0 = self.label_pred_pr[:, 0]
+
+        # Convert to [-1, 1] for autoencoder.
+        c = tf.reshape(self.c_images * 2. - 1., [-1, self.channel, self.scale_size, self.scale_size])
+        _, c_enc, _, _ = AutoencoderCNN(c, self.channel, self.z_dim, self.repeat_num, self.num_conv_filters,
+                                        self.data_format, reuse=True)
+        self.label_pred, self.label_pred_pr, self.c_vars = mnist_enc_NN(c_enc, self.dropout_pr, reuse=False, n_classes=self.n_classes)
+        self.label_pred_pr_c = self.label_pred_pr[:, 0]
 
         # Get probs with pixels, for reporting only.
-        self.label_pred_pix, self.label_pred_pr_pix, self.c_vars_pix = mnistCNN(
-            self.c_images_01, self.dropout_pr, reuse=False)
-        self.label_pred_pr0_pix = self.label_pred_pr_pix[:, 0]
+        self.label_pred_pix, self.label_pred_pr_pix, self.c_vars_pix = mnistCNN(self.c_images, self.dropout_pr,
+                                                                                reuse=False)
+        self.label_pred_pr_c_pix = self.label_pred_pr_pix
 
         # Define classifier losses.
-        cross_entropy = tf.nn.softmax_cross_entropy_with_logits(
-            labels=self.c_labels, logits=self.label_pred)
+        cross_entropy = tf.nn.softmax_cross_entropy_with_logits(labels=self.c_labels, logits=self.label_pred)
         cross_entropy = tf.reduce_mean(cross_entropy)
 
-        cross_entropy_pix = tf.nn.softmax_cross_entropy_with_logits(
-            labels=self.c_labels, logits=self.label_pred_pix)
+        cross_entropy_pix = tf.nn.softmax_cross_entropy_with_logits(labels=self.c_labels, logits=self.label_pred_pix)
         cross_entropy_pix = tf.reduce_mean(cross_entropy_pix)
 
         # Define optimization procedure.
@@ -415,13 +387,11 @@ class Trainer(object):
             self.c_optim = c_opt.apply_gradients(c_capped_gvs) 
 
         # Compute accuracy.
-        correct_prediction = tf.equal(
-            tf.argmax(self.label_pred, 1), tf.argmax(self.c_labels, 1))
+        correct_prediction = tf.equal(tf.argmax(self.label_pred, 1), tf.argmax(self.c_labels, 1))
         correct_prediction = tf.cast(correct_prediction, tf.float32)
         self.classifier_accuracy = tf.reduce_mean(correct_prediction)
 
-        correct_prediction_pix = tf.equal(
-            tf.argmax(self.label_pred_pix, 1), tf.argmax(self.c_labels, 1))
+        correct_prediction_pix = tf.equal(tf.argmax(self.label_pred_pix, 1), tf.argmax(self.c_labels, 1))
         correct_prediction_pix = tf.cast(correct_prediction_pix, tf.float32)
         self.classifier_accuracy_pix = tf.reduce_mean(correct_prediction_pix)
 
@@ -432,72 +402,45 @@ class Trainer(object):
         save_image(x_fixed, '{}/x_fixed.png'.format(self.model_dir))
         # Use tensorflow tutorial set for conveniently labeled mnist.
         self.mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
-        self.c_images_reference, self.c_labels_reference = self.prep_mix_data(split='train', mix=[.5, .5], n=8000)
-        self.c_images_user, self.c_labels_user = self.prep_mix_data(split='classifier', mix=[.5, .5], n=100)
-        self.c_images_test, self.c_labels_test = self.prep_mix_data(split='test', mix=[.5, .5], n=1800)
+        self.c_images_reference, self.c_labels_reference = self.prep_mix_data(split='train', mix=[.5, .5], n=4000 * self.n_classes)
+        self.c_images_user, self.c_labels_user = self.prep_mix_data(split='classifier', mix=[.5, .5], n=50 * self.n_classes)
+        self.c_images_test, self.c_labels_test = self.prep_mix_data(split='test', mix=[.5, .5], n=900 * self.n_classes)
 
         # Train generator.
         for step in trange(self.start_step, self.max_step):
             # First do classifier updates.
-            batch_user = self.get_n_images_and_labels(
-                self.batch_size, self.c_images_user, self.c_labels_user)
-            batch_reference = self.get_n_images_and_labels(
-                self.batch_size, self.c_images_reference, self.c_labels_reference)
+            batch_user = self.get_n_images_and_labels(self.batch_size, self.c_images_user, self.c_labels_user)
+            batch_reference = self.get_n_images_and_labels(self.batch_size, self.c_images_reference, self.c_labels_reference)
 
             self.sess.run(self.c_optim,
-                feed_dict={
-                    self.c_images_01: batch_user[0],
-                    self.c_labels: batch_user[1],
-                    self.dropout_pr: 0.5})
+                          feed_dict={self.c_images: batch_user[0], self.c_labels: batch_user[1], self.dropout_pr: 0.5})
             self.sess.run(self.c_optim_pix,
-                feed_dict={
-                    self.c_images_01: batch_reference[0],
-                    self.c_labels: batch_reference[1],
-                    self.dropout_pr: 0.5})
+                          feed_dict={self.c_images: batch_reference[0], self.c_labels: batch_reference[1],
+                                     self.dropout_pr: 0.5})
 
             if step % self.log_step == 0:
-                user_acc, user_acc_pix = self.sess.run([
-                        self.classifier_accuracy,
-                        self.classifier_accuracy_pix],
-                    feed_dict={
-                        self.c_images_01: batch_user[0],
-                        self.c_labels: batch_user[1],
-                        self.dropout_pr: 1.0})
-                test_acc, test_acc_pix = self.sess.run([
-                        self.classifier_accuracy,
-                        self.classifier_accuracy_pix],
-                    feed_dict={
-                        self.c_images_01: self.c_images_test,
-                        self.c_labels: self.c_labels_test,
-                        self.dropout_pr: 1.0})
+                user_acc, user_acc_pix = self.sess.run([self.classifier_accuracy, self.classifier_accuracy_pix],
+                    feed_dict={self.c_images: batch_user[0], self.c_labels: batch_user[1], self.dropout_pr: 1.0})
+                test_acc, test_acc_pix = self.sess.run([self.classifier_accuracy, self.classifier_accuracy_pix], 
+                                                       feed_dict={self.c_images: self.c_images_test, 
+                                                                  self.c_labels: self.c_labels_test, 
+                                                                  self.dropout_pr: 1.0})
                 print('\nstep {},\nuser/test acc {:.4f}/{:.4f}'
-                      '\nuser/test acc_pix {:.4f}/{:.4f}'.format(
-                    step, user_acc, test_acc, user_acc_pix, test_acc_pix))
+                      '\nuser/test acc_pix {:.4f}/{:.4f}'.format(step, user_acc, test_acc, user_acc_pix, test_acc_pix))
             # Set up basket of items to be run. Occasionally fetch items
             # useful for logging and saving.
-            fetch_dict = {
-                'd_optim': self.d_optim,
-                'g_optim': self.g_optim,
-            }
+            fetch_dict = {'d_optim': self.d_optim, 'g_optim': self.g_optim}
             if step % self.log_step == 0:
-                fetch_dict.update({
-                    'summary': self.summary_op,
-                    'ae_loss_real': self.ae_loss_real,
-                    'ae_loss_fake': self.ae_loss_fake,
-                    'mmd': self.mmd,
-                    'keeping_probs': self.keeping_probs,
-                })
+                fetch_dict.update({'summary': self.summary_op,
+                                   'ae_loss_real': self.ae_loss_real,
+                                   'ae_loss_fake': self.ae_loss_fake,
+                                   'mmd': self.mmd,
+                                   'keeping_probs': self.keeping_probs
+                                   })
 
-            # Train a bit with mmd5050 (target), then switch to wmmd8020.
-            if step < 0:
-                weighted = False 
-                x_ = self.get_images_from_loader_target().transpose(
-                    [0, 3, 1, 2])
-                z_ = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
-            else:
-                weighted = True 
-                x_ = self.get_images_from_loader().transpose([0, 3, 1, 2])
-                z_ = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
+            weighted = True 
+            x_ = self.get_images_from_loader().transpose([0, 3, 1, 2])  # TODO: does this transpose need to happen?
+            z_ = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
             # Pre-fetch data and simulations, and normalize for classification.
             x_mnistcnn, g_mnistcnn = self.sess.run([
                     self.x_normed_for_mnist_prediction,
@@ -506,35 +449,27 @@ class Trainer(object):
                     self.x: x_,
                     self.z: z_})
             # Get probs using encodings.
-            x_pred_pr0 = self.sess.run(self.label_pred_pr0,
-                feed_dict={
-                    self.c_images_01: x_mnistcnn,
-                    self.dropout_pr: 1.0})
-            g_pred_pr0 = self.sess.run(self.label_pred_pr0,
-                feed_dict={
-                    self.c_images_01: g_mnistcnn,
-                    self.dropout_pr: 1.0})
+            x_pred_pr_c = self.sess.run(self.label_pred_pr_c, feed_dict={self.c_images: x_mnistcnn, self.dropout_pr: 1.0})
+            g_pred_pr_c = self.sess.run(self.label_pred_pr_c, feed_dict={self.c_images: g_mnistcnn, self.dropout_pr: 1.0})
             # Get probs using pixels.
-            x_pred_pr0_pix = self.sess.run(self.label_pred_pr0_pix,
-                feed_dict={
-                    self.c_images_01: x_mnistcnn,
-                    self.dropout_pr: 1.0})
-            g_pred_pr0_pix = self.sess.run(self.label_pred_pr0_pix,
-                feed_dict={
-                    self.c_images_01: g_mnistcnn,
-                    self.dropout_pr: 1.0})
+            x_pred_pr_c_pix = self.sess.run(self.label_pred_pr_c_pix, feed_dict={self.c_images: x_mnistcnn, self.dropout_pr: 1.0})
+            g_pred_pr_c_pix = self.sess.run(self.label_pred_pr_c_pix, feed_dict={self.c_images: g_mnistcnn, self.dropout_pr: 1.0})
 
             # Run full training step on pre-fetched data and simulations.
             result = self.sess.run(fetch_dict,
                 feed_dict={
                     self.x: x_,
                     self.z: z_,
-                    self.x_pr0: np.reshape(x_pred_pr0, [-1, 1]),
-                    self.g_pr0: np.reshape(g_pred_pr0, [-1, 1]),
-                    self.x_prop0: np.mean(np.round(x_pred_pr0)),
-                    self.g_prop0: np.mean(np.round(g_pred_pr0)),
-                    self.x_prop0_pix: np.mean(np.round(x_pred_pr0_pix)),
-                    self.g_prop0_pix: np.mean(np.round(g_pred_pr0_pix)),
+                    self.x_pr_c: x_pred_pr_c,
+                    self.g_pr_c: g_pred_pr_c,
+                    # self.x_prop_c: np.mean(np.round(x_pred_pr_c)),
+                    self.x_prop_c: np.mean((x_pred_pr_c.transpose() / x_pred_pr_c.sum(1)).transpose() == 1., 0),
+                    # self.g_prop_c: np.mean(np.round(g_pred_pr_c)),
+                    self.g_prop_c: np.mean((g_pred_pr_c.transpose() / g_pred_pr_c.sum(1)).transpose() == 1., 0),
+                    # self.x_prop_c_pix: np.mean(np.round(x_pred_pr_c_pix)),
+                    self.x_prop_c_pix: np.mean((x_pred_pr_c_pix.transpose() / x_pred_pr_c_pix.sum(1)).transpose() == 1., 0),
+                    # self.g_prop_c_pix: np.mean(np.round(g_pred_pr_c_pix)),
+                    self.g_prop_c_pix: np.mean((g_pred_pr_c_pix.transpose() / g_pred_pr_c_pix.sum(1)).transpose() == 1., 0),
                     self.classifier_accuracy_test: test_acc,
                     self.classifier_accuracy_test_pix: test_acc_pix,
                     self.lambda_mmd: self.lambda_mmd_setting, 
@@ -576,73 +511,13 @@ class Trainer(object):
 
 
     def get_images_from_loader(self):
-        x = self.data_loader.eval(session=self.sess)
+        x = self.data_loader_source.eval(session=self.sess)
         if self.data_format == 'NCHW':
             x = x.transpose([0, 2, 3, 1])
         return x
-
-
-    def get_images_from_loader_target(self):
-        x = self.data_loader_target.eval(session=self.sess)
-        if self.data_format == 'NCHW':
-            x = x.transpose([0, 2, 3, 1])
-        return x
-
-
-    def prep_01_data(self, split='classifier', mix='5050', n=100):
-        # Ensure that training mix has zero as target.
-        prop0 = int(mix[:2])
-        prop1 = int(mix[2:])
-        self.config.pct = [prop0, prop1]
-        n0 = int(n * prop0 / 100.)
-        n1 = int(n * prop1 / 100.)
-
-        def pct(mix):
-            amts = [int(mix[:2]), int(mix[2:])]
-            pct = float(min(amts)) / max(amts)
-            return pct
-
-        def fetch_01_and_prep(zipped_images_and_labels, percent):
-            # Fetch 01s and apportion according to mix percent.
-            d = zipped_images_and_labels
-            zero_ind = [i for i,v in enumerate(d) if v[1][0] == 1]
-            one_ind = [i for i,v in enumerate(d) if v[1][1] == 1]
-            assert n0 <= len(zero_ind) and n1 <= len(one_ind), (
-                'Asking for {} zeros and {} ones, but have {} zeros and {} ones'
-                ).format(n0, n1, len(zero_ind), len(one_ind))
-            zero_ind = zero_ind[:n0]
-            one_ind = one_ind[:n1]
-            eligible_indices = np.concatenate((zero_ind, one_ind))
-            d_01 = [v for i,v in enumerate(d) if i in eligible_indices]
-            d_01 = np.random.permutation(d_01)  # Shuffle for random sampling.
-            images = [v[0] for v in d_01]
-            labels = [v[1] for v in d_01]
-
-            # Reshape, rescale, recode.
-            #images = np.reshape(images,
-            #    [len(images), self.channel, self.scale_size, self.scale_size])
-            images = np.reshape(images, [len(images), -1])  # [n, 784]
-            #images = convert_01_to_n11(images)
-            labels = [[1.0, 0.0] if i.tolist().index(1) == 0 else [0.0, 1.0]
-                for i in labels]
-            return np.array(images), np.array(labels)
-
-        m = self.mnist
-        if split == 'classifier':
-            imgs_and_labs = zip(m.validation.images, m.validation.labels)
-            images, labels = fetch_01_and_prep(imgs_and_labs, pct(mix))
-        elif split == 'test':
-            imgs_and_labs = zip(m.test.images, m.test.labels)
-            images, labels = fetch_01_and_prep(imgs_and_labs, pct(mix))
-        elif split == 'train':
-            imgs_and_labs = zip(m.train.images, m.train.labels)
-            images, labels = fetch_01_and_prep(imgs_and_labs, pct(mix))
-
-        return images, labels
 
 
     def prep_mix_data(self, split='classifier', mix=np.array([0.5, 0.5]), classes=[0,1], n=100):
-        # Ensure that training mix has zero as target.
         assert mix.min() > 0., 'Mix can only contain positive components.'
         mix = mix / mix.sum()
         self.config.pct = mix
@@ -652,15 +527,15 @@ class Trainer(object):
 
 
         def fetch_and_prep(zipped_images_and_labels, percent):
-            # Fetch 01s and apportion according to mix percent.
+            # Fetch desired classes and apportion according to mix percent.
             d = zipped_images_and_labels
             class_exemplars = [[i for i,v in enumerate(d) if v[1][0] == j] for j in classes]
             assert min([n_by_class[j] > len(class_exemplars[j]) for j in range(len(classes))])
             indices = [i for item in class_exemplars[j][:n_by_class[j]] for i in item]
-            d_01 = [v for i,v in enumerate(d) if i in eligible_indices]
-            d_01 = np.random.permutation(d_01)  # Shuffle for random sampling.
-            images_list = [v[0] for v in d_01]
-            labels_list = [v[1] for v in d_01]
+            d = [d[i] for i in indices]
+            d = np.random.permutation(d)  # Shuffle for random sampling.
+            images_list = [v[0] for v in d]
+            labels_list = [v[1] for v in d]
 
             # Reshape, rescale, recode.
             images = np.reshape(images_list, [n, -1])  # [n, 784]
@@ -668,7 +543,7 @@ class Trainer(object):
             label_to_class_index = {classes[j]:j for j in range(len(classes))}
             for i in range(n):
                 labels[i, label_to_class_index[labels_list[i]]] = 1.
-            
+
             return np.array(images), np.array(labels)
 
         m = self.mnist

@@ -27,10 +27,10 @@ def main(config):
         do_shuffle = False
 
     dir_source = 'blahblahblah'
-    dir_target = 'blahblahblah'
-    data_loader_source = get_loader(data_path, config.batch_size, config.scale_size, config.data_format, config.split, target=dir_source)
-    data_loader_target = get_loader(data_path, config.batch_size, config.scale_size, config.data_format, config.split, target=dir_target)
-    trainer = Trainer(config, data_loader_source, data_loader_target)
+    data_path = config.data_dir + '/' + config.dataset
+    # (root, batch_size, source_mix, classes, split_name, data_format = 'NHWC', seed = None)
+    images_train, labels_train = get_loader(data_path, config.batch_size, config.source_mix, config.data_classes)
+    trainer = Trainer(config, images_train)
 
     if config.is_train:
         save_config(config)
