@@ -95,7 +95,9 @@ class Trainer(object):
         self.use_gpu = config.use_gpu
         self.data_format = config.data_format
 
+        print(self.data_loader_source.shape, self.data_format)
         _, self.height, self.width, self.channel = get_conv_shape(self.data_loader_source, self.data_format)
+        print(self.height, self.width, self.channel)
         self.scale_size = self.height 
         self.repeat_num = int(np.log2(self.height)) - 1  # 2 --> 1 for 28x28 mnist.
 
@@ -139,12 +141,10 @@ class Trainer(object):
         self.weighted = tf.placeholder(tf.bool, name='weighted')
 
         # Set up generator and autoencoder functions.
-        g, self.g_var = GeneratorCNN(
-            self.z, self.num_conv_filters, self.channel,
-            self.repeat_num, self.data_format, reuse=False)
-        d_out, d_enc, self.d_var_enc, self.d_var_dec = AutoencoderCNN(
-            tf.concat([x, g], 0), self.channel, self.z_dim, self.repeat_num,
-            self.num_conv_filters, self.data_format, reuse=False)
+        g, self.g_var = GeneratorCNN(self.z, self.num_conv_filters, self.channel, self.repeat_num, self.data_format, reuse=False)
+        print(x.shape, g.shape)
+        print(self.channel)
+        d_out, d_enc, self.d_var_enc, self.d_var_dec = AutoencoderCNN(tf.concat([x, g], 0), self.channel, self.z_dim, self.repeat_num, self.num_conv_filters, self.data_format, reuse=False)
         AE_x, AE_g = tf.split(d_out, 2)
         self.x_enc, self.g_enc = tf.split(d_enc, 2)
         self.g = denorm_img(g, self.data_format)

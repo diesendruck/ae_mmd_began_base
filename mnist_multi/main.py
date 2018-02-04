@@ -27,7 +27,7 @@ def main(config):
         do_shuffle = False
 
     dir_source = 'blahblahblah'
-    data_path = config.data_dir + '/' + config.dataset
+    data_path = config.data_dir #+ '/' + config.dataset
     # (root, batch_size, source_mix, classes, split_name, data_format = 'NHWC', seed = None)
     images_train, labels_train = get_loader(data_path, config.batch_size, config.source_mix, config.data_classes)
     trainer = Trainer(config, images_train)

@@ -12,14 +12,14 @@ def get_loader(root, batch_size, source_mix, classes, split_name = None, data_fo
     scale_size = 28
     if split_name:
         root = os.path.join(root, 'splits', split_name)
-    paths = [path for path in os.listdir(root) if path[-4:] == '.jpg']
+    paths = [root + '/' + path for path in os.listdir(root) if path[-4:] == '.jpg']
     tf_decode = tf.image.decode_jpeg
 
     with Image.open(paths[0]) as img:
         w, h = img.size
         shape = [h, w, channels]
 
-    indices = [[]] * n_classes
+    indices = [[] for j in range(n_classes)]
     class_set = frozenset(classes)  # for speed
     class_counts = [0] * n_classes
     class_to_index = {classes[j]:j for j in range(n_classes)}
@@ -32,7 +32,7 @@ def get_loader(root, batch_size, source_mix, classes, split_name = None, data_fo
 
     source_n = int(max([class_counts[j] / source_mix[j] for j in range(n_classes)]))
     source_n_by_class = [int(source_mix[j] * source_n) for j in range(n_classes)]
-    new_paths = [paths[idx] for j in range(n_classes) for idx in indices[j][source_n_by_class[j]]]
+    new_paths = [paths[idx[0]] for j in range(n_classes) for idx in indices[j][:source_n_by_class[j]]]
     class_assignments = [source_n_by_class[j] for j in range(n_classes) for c in xrange(source_n_by_class[j])]
     
     filename_queue = tf.train.string_input_producer(list(paths), shuffle=False, seed=seed)
@@ -60,4 +60,4 @@ def get_loader(root, batch_size, source_mix, classes, split_name = None, data_fo
     base_onehot = tf.gather(tf.eye(n_classes, dtype=images.dtype), indices=classes, axis=1)
     labels_onehot = tf.gather(tf.eye(n_classes), indices=labels, axis=0)
 
-    return tf.to_float(queue), labels
+    return tf.to_float(images), labels
