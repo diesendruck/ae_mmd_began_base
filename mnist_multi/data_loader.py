@@ -39,14 +39,16 @@ def get_loader(root, batch_size, source_mix, classes, split_name = None, data_fo
     reader = tf.WholeFileReader()
     filename, data = reader.read(filename_queue)
     image = tf_decode(data, channels=channels)
-    label = tf.string_to_number(tf.substr(filename, 0, 1), out_type=tf.int32)
+    # label = tf.string_to_number(tf.substr(filename, 0, 1), out_type=tf.int32)
     image = tf.image.rgb_to_grayscale(image)
     image.set_shape(shape)
 
     min_after_dequeue = batch_size * 2
     capacity = min_after_dequeue + 3 * batch_size
 
-    images, labels = tf.train.shuffle_batch([image, label], batch_size=batch_size, num_threads=4, capacity=capacity, 
+    # images, labels = tf.train.shuffle_batch([image, label], batch_size=batch_size, num_threads=4, capacity=capacity, 
+    #                               min_after_dequeue=min_after_dequeue, name='synthetic_inputs')
+    images = tf.train.shuffle_batch([image], batch_size=batch_size, num_threads=4, capacity=capacity, 
                                    min_after_dequeue=min_after_dequeue, name='synthetic_inputs')
     images = tf.image.resize_nearest_neighbor(images, [scale_size, scale_size])
 
@@ -57,7 +59,7 @@ def get_loader(root, batch_size, source_mix, classes, split_name = None, data_fo
     else:
         raise Exception("[!] Unkown data_format: {}".format(data_format))
 
-    base_onehot = tf.gather(tf.eye(n_classes, dtype=images.dtype), indices=classes, axis=1)
-    labels_onehot = tf.gather(tf.eye(n_classes), indices=labels, axis=0)
+    # base_onehot = tf.gather(tf.eye(n_classes, dtype=images.dtype), indices=classes, axis=1)
+    # labels_onehot = tf.gather(tf.eye(n_classes), indices=labels, axis=0)
 
-    return tf.to_float(images), labels
+    return tf.to_float(images)  #, labels

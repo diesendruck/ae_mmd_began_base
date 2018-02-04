@@ -152,8 +152,12 @@ class Trainer(object):
         self.AE_x = denorm_img(AE_x, self.data_format)
 
         # Set up autoencoder with test input.
-        self.test_input = tf.placeholder(tf.float32, name='test_input',
-            shape=[None, self.channel, self.scale_size, self.scale_size])
+        if self.data_format == 'NCHW':
+            self.test_input = tf.placeholder(tf.float32, name='test_input',
+                shape=[None, self.channel, self.scale_size, self.scale_size])
+        if self.data_format == 'NHWC':
+            self.test_input = tf.placeholder(tf.float32, name='test_input',
+                shape=[None, self.scale_size, self.scale_size, self.channel])
         _, self.test_enc, _, _ = AutoencoderCNN(
             self.test_input, self.channel, self.z_dim, self.repeat_num,
             self.num_conv_filters, self.data_format, reuse=True)
@@ -207,13 +211,16 @@ class Trainer(object):
 
         min_thinning = min([self.source_mix[j] / self.target_mix[j] for j in range(len(self.data_classes))])
         thin_factor = 1. - np.array([self.source_mix[j] / self.target_mix[j] for j in range(len(self.data_classes))]) * min_thinning
-        self.keeping_probs = 1. - tf.matmul(self.x_pr_c, thin_factor)
+        thin_factor = tf.cast(thin_factor, self.x_pr_c.dtype)
+        thin_factor = tf.reshape(thin_factor, [-1, 1])
+        self.keeping_probs = tf.ones([self.batch_size, 1], dtype=self.x_pr_c.dtype) - tf.matmul(self.x_pr_c, thin_factor)
 
         keeping_probs_tiled = tf.tile(self.keeping_probs, [1, gen_num])
         # Autoencoder weights.
         self.p1_weights_ae = 1. / self.keeping_probs
         self.p1_weights_ae_normed = self.p1_weights_ae / tf.reduce_sum(self.p1_weights_ae)
-        self.g_weights_ae = 1. / (1. - thin_factor * tf.reshape(self.g_pr_c, [-1, 1]))
+        #self.g_weights_ae = 1. / (1. - thin_factor * tf.reshape(self.g_pr_c, [-1, 1]))
+        self.g_weights_ae = 1. / (1. - tf.matmul(self.g_pr_c, thin_factor))
         self.g_weights_ae_normed = self.g_weights_ae / tf.reduce_sum(self.g_weights_ae)
 
         # MMD weights.
@@ -330,10 +337,14 @@ class Trainer(object):
             tf.summary.scalar("loss/mmd_w", self.mmd_weighted),
             tf.summary.scalar("misc/d_lr", self.d_lr),
             tf.summary.scalar("misc/g_lr", self.g_lr),
-            tf.summary.scalar("prop/x_prop_c", self.x_prop_c),
-            tf.summary.scalar("prop/g_prop_c", self.g_prop_c),
-            tf.summary.scalar("prop/x_prop0_pix_reference", self.x_prop_c_pix),
-            tf.summary.scalar("prop/g_prop0_pix_reference", self.g_prop_c_pix),
+            # tf.summary.scalar("prop/x_prop_c", self.x_prop_c),
+            tf.summary.tensor_summary("prop/x_prop_c", self.x_prop_c),
+            # tf.summary.scalar("prop/g_prop_c", self.g_prop_c),
+            tf.summary.tensor_summary("prop/g_prop_c", self.g_prop_c),
+            # tf.summary.scalar("prop/x_prop_c_pix_reference", self.x_prop_c_pix),
+            tf.summary.tensor_summary("prop/x_prop_c_pix_reference", self.x_prop_c_pix),
+            # tf.summary.scalar("prop/g_prop_c_pix_reference", self.g_prop_c_pix),
+            tf.summary.tensor_summary("prop/g_prop_c_pix_reference", self.g_prop_c_pix),
             tf.summary.scalar("prop/classifier_accuracy_test",
                 self.classifier_accuracy_test),
             tf.summary.scalar("prop/classifier_accuracy_test_pix_reference",
@@ -352,11 +363,14 @@ class Trainer(object):
         self.dropout_pr = tf.placeholder(tf.float32)
 
         # Convert to [-1, 1] for autoencoder.
-        c = tf.reshape(self.c_images * 2. - 1., [-1, self.channel, self.scale_size, self.scale_size])
+        if self.data_format == 'NCHW':
+            c = tf.reshape(self.c_images * 2. - 1., [-1, self.channel, self.scale_size, self.scale_size])
+        if self.data_format == 'NHWC':
+            c = tf.reshape(self.c_images * 2. - 1., [-1, self.scale_size, self.scale_size, self.channel])
         _, c_enc, _, _ = AutoencoderCNN(c, self.channel, self.z_dim, self.repeat_num, self.num_conv_filters,
                                         self.data_format, reuse=True)
         self.label_pred, self.label_pred_pr, self.c_vars = mnist_enc_NN(c_enc, self.dropout_pr, reuse=False, n_classes=self.n_classes)
-        self.label_pred_pr_c = self.label_pred_pr[:, 0]
+        self.label_pred_pr_c = self.label_pred_pr
 
         # Get probs with pixels, for reporting only.
         self.label_pred_pix, self.label_pred_pr_pix, self.c_vars_pix = mnistCNN(self.c_images, self.dropout_pr,
@@ -402,9 +416,9 @@ class Trainer(object):
         save_image(x_fixed, '{}/x_fixed.png'.format(self.model_dir))
         # Use tensorflow tutorial set for conveniently labeled mnist.
         self.mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
-        self.c_images_reference, self.c_labels_reference = self.prep_mix_data(split='train', mix=[.5, .5], n=4000 * self.n_classes)
-        self.c_images_user, self.c_labels_user = self.prep_mix_data(split='classifier', mix=[.5, .5], n=50 * self.n_classes)
-        self.c_images_test, self.c_labels_test = self.prep_mix_data(split='test', mix=[.5, .5], n=900 * self.n_classes)
+        self.c_images_reference, self.c_labels_reference = self.prep_mix_data(split='train',      mix=self.config.source_mix, classes=self.config.data_classes, n=4000 * self.n_classes)
+        self.c_images_user,      self.c_labels_user      = self.prep_mix_data(split='classifier', mix=self.config.source_mix, classes=self.config.data_classes, n=  50 * self.n_classes)
+        self.c_images_test,      self.c_labels_test      = self.prep_mix_data(split='test',       mix=self.config.source_mix, classes=self.config.data_classes, n= 900 * self.n_classes)
 
         # Train generator.
         for step in trange(self.start_step, self.max_step):
@@ -438,8 +452,11 @@ class Trainer(object):
                                    'keeping_probs': self.keeping_probs
                                    })
 
-            weighted = True 
-            x_ = self.get_images_from_loader().transpose([0, 3, 1, 2])  # TODO: does this transpose need to happen?
+            weighted = True
+            if self.data_format == 'NCHW':
+                x_ = self.get_images_from_loader().transpose([0, 3, 1, 2])
+            if self.data_format == 'NHWC':
+                x_ = self.get_images_from_loader()
             z_ = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
             # Pre-fetch data and simulations, and normalize for classification.
             x_mnistcnn, g_mnistcnn = self.sess.run([
@@ -517,45 +534,53 @@ class Trainer(object):
         return x
 
 
-    def prep_mix_data(self, split='classifier', mix=np.array([0.5, 0.5]), classes=[0,1], n=100):
+    def prep_mix_data(self, split='classifier', mix=None, classes=[0,1], n=100):
+        if not mix:
+            mix = [1. / len(classes)] * len(classes)
+        mix = np.array(mix)
         assert mix.min() > 0., 'Mix can only contain positive components.'
         mix = mix / mix.sum()
         self.config.pct = mix
         cutoffs = np.floor(np.cumsum(mix * n))
-        n_by_class = np.append(cutoffs[:1], cutoffs[1:] - cutoffs[:-1], 0)
+        n_by_class = np.array(np.append(cutoffs[:1], cutoffs[1:] - cutoffs[:-1], 0), np.int32)
         assert n_by_class.sum() == n, 'Something went wrong in designing the cluster counts, try using a mix and n that are exactly compatible.'
 
 
-        def fetch_and_prep(zipped_images_and_labels, percent):
+        def fetch_and_prep(zipped_images_and_labels, mix, n):
+            cutoffs = np.floor(np.cumsum(mix * n))
+            n_by_class = np.array(np.append(cutoffs[:1], cutoffs[1:] - cutoffs[:-1], 0), np.int32)
+            assert n_by_class.sum() == n, 'Something went wrong in designing the cluster counts, try using a mix and n that are exactly compatible.'
             # Fetch desired classes and apportion according to mix percent.
             d = zipped_images_and_labels
-            class_exemplars = [[i for i,v in enumerate(d) if v[1][0] == j] for j in classes]
-            assert min([n_by_class[j] > len(class_exemplars[j]) for j in range(len(classes))])
-            indices = [i for item in class_exemplars[j][:n_by_class[j]] for i in item]
+            class_exemplars = [[i for i,v in enumerate(d) if v[1][j] == 1] for j in classes]
+            if max([n_by_class[j] > len(class_exemplars[j]) for j in range(len(classes))]):
+                scaling = min([(len(class_exemplars[j]) + 0.) / n_by_class[j] for j in range(len(classes))])
+                n_by_class = [int(n_by_class[j] * scaling) for j in range(len(classes))]
+                n = sum(n_by_class)
+            # indices = [i for item in class_exemplars[j][:n_by_class[j]] for i in item]
+            indices = [idx for j in range(len(classes)) for idx in class_exemplars[j][:n_by_class[j]]]
             d = [d[i] for i in indices]
             d = np.random.permutation(d)  # Shuffle for random sampling.
             images_list = [v[0] for v in d]
             labels_list = [v[1] for v in d]
 
             # Reshape, rescale, recode.
-            images = np.reshape(images_list, [n, -1])  # [n, 784]
-            labels = np.zeros(shape=[n, len(classes)],dtype=images.dtype)
+            images = np.reshape(np.array(images_list), [n, -1])  # [n, 784]
+            labels = np.array(labels_list)[:, classes]
             label_to_class_index = {classes[j]:j for j in range(len(classes))}
-            for i in range(n):
-                labels[i, label_to_class_index[labels_list[i]]] = 1.
 
-            return np.array(images), np.array(labels)
+            return images, labels
 
         m = self.mnist
         if split == 'classifier':
             imgs_and_labs = zip(m.validation.images, m.validation.labels)
-            images, labels = fetch_and_prep(imgs_and_labs, mix)
+            images, labels = fetch_and_prep(imgs_and_labs, mix, n)
         elif split == 'test':
             imgs_and_labs = zip(m.test.images, m.test.labels)
-            images, labels = fetch_and_prep(imgs_and_labs, mix)
+            images, labels = fetch_and_prep(imgs_and_labs, mix, n)
         elif split == 'train':
             imgs_and_labs = zip(m.train.images, m.train.labels)
-            images, labels = fetch_and_prep(imgs_and_labs, mix)
+            images, labels = fetch_and_prep(imgs_and_labs, mix, n)
 
         return images, labels
 
