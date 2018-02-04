@@ -12,7 +12,8 @@ def get_loader(root, batch_size, source_mix, classes, split_name = None, data_fo
     scale_size = 28
     if split_name:
         root = os.path.join(root, 'splits', split_name)
-    paths = [root + '/' + path for path in os.listdir(root) if path[-4:] == '.jpg']
+    frozen_classes = frozenset(classes)
+    paths = [root + '/' + path for path in os.listdir(root) if path[-4:] == '.jpg' and int(path[0]) in frozen_classes]
     tf_decode = tf.image.decode_jpeg
 
     with Image.open(paths[0]) as img:

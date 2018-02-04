@@ -95,9 +95,7 @@ class Trainer(object):
         self.use_gpu = config.use_gpu
         self.data_format = config.data_format
 
-        print(self.data_loader_source.shape, self.data_format)
         _, self.height, self.width, self.channel = get_conv_shape(self.data_loader_source, self.data_format)
-        print(self.height, self.width, self.channel)
         self.scale_size = self.height 
         self.repeat_num = int(np.log2(self.height)) - 1  # 2 --> 1 for 28x28 mnist.
 
@@ -142,8 +140,6 @@ class Trainer(object):
 
         # Set up generator and autoencoder functions.
         g, self.g_var = GeneratorCNN(self.z, self.num_conv_filters, self.channel, self.repeat_num, self.data_format, reuse=False)
-        print(x.shape, g.shape)
-        print(self.channel)
         d_out, d_enc, self.d_var_enc, self.d_var_dec = AutoencoderCNN(tf.concat([x, g], 0), self.channel, self.z_dim, self.repeat_num, self.num_conv_filters, self.data_format, reuse=False)
         AE_x, AE_g = tf.split(d_out, 2)
         self.x_enc, self.g_enc = tf.split(d_enc, 2)
@@ -324,7 +320,7 @@ class Trainer(object):
         self.g_optim = g_opt.minimize(
             self.g_loss, var_list=self.g_var, global_step=self.step)
 
-        self.summary_op = tf.summary.merge([
+        summary_list = [
             tf.summary.image("a_g", self.g, max_outputs=10),
             tf.summary.image("b_AE_g", self.AE_g, max_outputs=10),
             tf.summary.image("c_x", to_nhwc(self.x, self.data_format),
@@ -338,19 +334,22 @@ class Trainer(object):
             tf.summary.scalar("misc/d_lr", self.d_lr),
             tf.summary.scalar("misc/g_lr", self.g_lr),
             # tf.summary.scalar("prop/x_prop_c", self.x_prop_c),
-            tf.summary.tensor_summary("prop/x_prop_c", self.x_prop_c),
             # tf.summary.scalar("prop/g_prop_c", self.g_prop_c),
-            tf.summary.tensor_summary("prop/g_prop_c", self.g_prop_c),
             # tf.summary.scalar("prop/x_prop_c_pix_reference", self.x_prop_c_pix),
-            tf.summary.tensor_summary("prop/x_prop_c_pix_reference", self.x_prop_c_pix),
             # tf.summary.scalar("prop/g_prop_c_pix_reference", self.g_prop_c_pix),
             tf.summary.tensor_summary("prop/g_prop_c_pix_reference", self.g_prop_c_pix),
             tf.summary.scalar("prop/classifier_accuracy_test",
                 self.classifier_accuracy_test),
             tf.summary.scalar("prop/classifier_accuracy_test_pix_reference",
                 self.classifier_accuracy_test_pix),
-        ])
+        ]
+        
+        summary_list += [tf.summary.scalar('prop/x_prop_{}'.format(self.config.data_classes[j]),     self.x_prop_c[j])     for j in range(len(self.config.data_classes))]
+        summary_list += [tf.summary.scalar('prop/g_prop_{}'.format(self.config.data_classes[j]),     self.g_prop_c[j])     for j in range(len(self.config.data_classes))]
+        summary_list += [tf.summary.scalar('prop/x_prop_pix_{}'.format(self.config.data_classes[j]), self.x_prop_c_pix[j]) for j in range(len(self.config.data_classes))]
+        summary_list += [tf.summary.scalar('prop/g_prop_pix_{}'.format(self.config.data_classes[j]), self.g_prop_c_pix[j]) for j in range(len(self.config.data_classes))]
 
+        self.summary_op = tf.summary.merge(summary_list)
         
     def build_mnist_classifier(self):
         # Classification data is [0, 1], from TF package.
