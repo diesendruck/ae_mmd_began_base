@@ -1,9 +1,12 @@
 #-*- coding: utf-8 -*-
 import argparse
-
+import json
 
 def str2bool(v):
     return v.lower() in ('true', '1')
+
+def json2obj(v):
+    return json.loads(v)
 
 arg_lists = []
 parser = argparse.ArgumentParser()
@@ -34,9 +37,9 @@ data_arg.add_argument('--grayscale', type=str2bool, default=True)
 data_arg.add_argument('--num_worker', type=int, default=4)
 data_arg.add_argument('--target_num', type=int, default=2000,
                       help='# of target samples, used to sample target group mean and covariance')
-data_arg.add_argument('--data_classes', type=list, default=[0, 1])
-data_arg.add_argument('--source_mix', type=list, default=[.2, .8])
-data_arg.add_argument('--target_mix', type=list, default=[.5, .5])
+data_arg.add_argument('--data_classes', type=int, nargs='+', default=[0, 1])
+data_arg.add_argument('--source_mix', type=float, nargs='+', default=[.2, .8])
+data_arg.add_argument('--target_mix', type=float, nargs='+', default=[.5, .5])
 
 # Training / test parameters
 train_arg = add_argument_group('Training')

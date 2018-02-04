@@ -221,7 +221,7 @@ def upscale(x, scale, data_format):
 # BEGIN section from Tensorflow website. For MNIST classification.
 # https://github.com/tensorflow/tensorflow/blob/r1.4/tensorflow/examples/
 #   tutorials/mnist/mnist_deep.py
-def mnistCNN(x, dropout_pr, reuse):
+def mnistCNN(x, dropout_pr, reuse, n_classes):
     """mnistCNN builds the graph for a deep net for classifying digits.
     Args:
       x: an input tensor with the dimensions (N_examples, 784), where 784 is the
@@ -277,8 +277,8 @@ def mnistCNN(x, dropout_pr, reuse):
 
         # Map the 1024 features to 10 classes, one for each digit
         with tf.name_scope('fc2'):
-            W_fc2 = weight_variable([1024, 2])
-            b_fc2 = bias_variable([2])
+            W_fc2 = weight_variable([1024, n_classes])
+            b_fc2 = bias_variable([n_classes])
 
         y_logits = tf.matmul(h_fc1_drop, W_fc2) + b_fc2
         y_probs = tf.nn.softmax(y_logits)

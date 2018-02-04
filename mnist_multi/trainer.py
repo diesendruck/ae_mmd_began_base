@@ -373,7 +373,7 @@ class Trainer(object):
 
         # Get probs with pixels, for reporting only.
         self.label_pred_pix, self.label_pred_pr_pix, self.c_vars_pix = mnistCNN(self.c_images, self.dropout_pr,
-                                                                                reuse=False)
+                                                                                reuse=False, n_classes = len(self.data_classes))
         self.label_pred_pr_c_pix = self.label_pred_pr_pix
 
         # Define classifier losses.
@@ -415,9 +415,9 @@ class Trainer(object):
         save_image(x_fixed, '{}/x_fixed.png'.format(self.model_dir))
         # Use tensorflow tutorial set for conveniently labeled mnist.
         self.mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
-        self.c_images_reference, self.c_labels_reference = self.prep_mix_data(split='train',      mix=self.config.source_mix, classes=self.config.data_classes, n=4000 * self.n_classes)
-        self.c_images_user,      self.c_labels_user      = self.prep_mix_data(split='classifier', mix=self.config.source_mix, classes=self.config.data_classes, n=  50 * self.n_classes)
-        self.c_images_test,      self.c_labels_test      = self.prep_mix_data(split='test',       mix=self.config.source_mix, classes=self.config.data_classes, n= 900 * self.n_classes)
+        self.c_images_reference, self.c_labels_reference = self.prep_mix_data(split='train',      classes=self.config.data_classes, n=4000 * self.n_classes)
+        self.c_images_user,      self.c_labels_user      = self.prep_mix_data(split='classifier', classes=self.config.data_classes, n=  50 * self.n_classes)
+        self.c_images_test,      self.c_labels_test      = self.prep_mix_data(split='test',       classes=self.config.data_classes, n= 900 * self.n_classes)
 
         # Train generator.
         for step in trange(self.start_step, self.max_step):
