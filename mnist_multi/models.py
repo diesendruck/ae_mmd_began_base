@@ -36,20 +36,16 @@ def AutoencoderCNN(x, input_channel, z_num, repeat_num, num_filters,
     # NOTE: Changed reshape to 7x7 for 28x28 mnist.
     with tf.variable_scope("ae_enc", reuse=reuse) as vs_enc:
         # Encoder
-        x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu,
-                        data_format=data_format)
+        x = slim.conv2d(x, num_filters, 3, 1, activation_fn=tf.nn.elu, data_format=data_format)
 
         prev_channel_num = num_filters
         for idx in range(repeat_num):
             channel_num = num_filters * (idx + 1)
             # NOTE: The following two lines were originally doubled up.
-            x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu,
-                            data_format=data_format)
-            if idx < repeat_num - 1:
-                x = slim.conv2d(x, channel_num, 3, 2, activation_fn=tf.nn.elu,
-                                data_format=data_format)
-                #x = tf.contrib.layers.max_pool2d(x, [2, 2], [2, 2],
-                #                                 padding='VALID')
+            with tf.variable_scope(str(idx)):
+                x = slim.conv2d(x, channel_num, 3, 1, activation_fn=tf.nn.elu, data_format=data_format)
+                if idx < repeat_num - 1:
+                    x = slim.conv2d(x, channel_num, 3, 2, activation_fn=tf.nn.elu, data_format=data_format)
 
         x = tf.reshape(x, [-1, np.prod([7, 7, channel_num])])
         z = x = slim.fully_connected(x, z_num, activation_fn=None)
