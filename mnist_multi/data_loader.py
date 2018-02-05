@@ -41,7 +41,7 @@ def get_loader(root, batch_size, source_mix, classes, split_name = None, data_fo
     print('Class assignments contain', [len([c for c in class_assignments if c == j]) for j in classes], 'of', classes, 'respectively')
     print('First 10 path/class pairs:', zip([path.split('/')[-1][0] for path in new_paths[:10]], class_assignments[:10]))
 
-    filename_queue = tf.train.string_input_producer(list(paths), shuffle=False, seed=seed)
+    filename_queue = tf.train.string_input_producer(list(new_paths), shuffle=False, seed=seed)
     reader = tf.WholeFileReader()
     filename, data = reader.read(filename_queue)
     image = tf_decode(data, channels=channels)
