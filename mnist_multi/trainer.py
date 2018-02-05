@@ -207,17 +207,29 @@ class Trainer(object):
 
         min_thinning = min([self.source_mix[j] / self.target_mix[j] for j in range(len(self.data_classes))])
         thin_factor = 1. - np.array([self.source_mix[j] / self.target_mix[j] for j in range(len(self.data_classes))]) * min_thinning
-        thin_factor = tf.cast(thin_factor, self.x_pr_c.dtype)
-        thin_factor = tf.reshape(thin_factor, [-1, 1])
-        self.keeping_probs = tf.ones([self.batch_size, 1], dtype=self.x_pr_c.dtype) - tf.matmul(self.x_pr_c, thin_factor)
+        thin_factor_tf = tf.reshape(tf.cast(thin_factor, self.x_pr_c.dtype), [-1, 1])
+        keeping_probs_by_class = 1. - thin_factor
+        keeping_probs_by_class = keeping_probs_by_class / keeping_probs_by_class.max()
+        keeping_probs_by_class_tf = tf.cast(keeping_probs_by_class.reshape([-1, 1]), self.x_pr_c.dtype)
+        self.keeping_probs = tf.matmul(self.x_pr_c, keeping_probs_by_class_tf)
+        weights_by_class = 1. / keeping_probs_by_class
+        # weights_by_class = weights_by_class / weights_by_class.min()
 
         keeping_probs_tiled = tf.tile(self.keeping_probs, [1, gen_num])
         # Autoencoder weights.
         self.p1_weights_ae = 1. / self.keeping_probs
         self.p1_weights_ae_normed = self.p1_weights_ae / tf.reduce_sum(self.p1_weights_ae)
         #self.g_weights_ae = 1. / (1. - thin_factor * tf.reshape(self.g_pr_c, [-1, 1]))
-        self.g_weights_ae = 1. / (1. - tf.matmul(self.g_pr_c, thin_factor))
+        self.g_weights_ae = 1. / (1. - tf.matmul(self.g_pr_c, thin_factor_tf))
         self.g_weights_ae_normed = self.g_weights_ae / tf.reduce_sum(self.g_weights_ae)
+
+        # Print some diagnostics
+        print('Classes         ' + ' '.join(['{: 4d}  '.format(j) for j in self.data_classes]))
+        print('Source freq.    ' + ' '.join(['{:6.3f}'.format(v) for v in self.source_mix]))
+        print('Target freq.    ' + ' '.join(['{:6.3f}'.format(v) for v in self.target_mix]))
+        print('Thinning factor ' + ' '.join(['{:6.3f}'.format(v) for v in thin_factor.reshape([-1]).tolist()]))
+        print('Keeping probs   ' + ' '.join(['{:6.3f}'.format(v) for v in keeping_probs_by_class.reshape([-1]).tolist()]))
+        print('Weights         ' + ' '.join(['{:6.3f}'.format(v) for v in weights_by_class.reshape([-1]).tolist()]))
 
         # MMD weights.
         self.p1_weights_xy = 1. / keeping_probs_tiled

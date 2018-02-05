@@ -31,11 +31,16 @@ def get_loader(root, batch_size, source_mix, classes, split_name = None, data_fo
             class_counts[class_to_index[f_class]] += 1
             indices[class_to_index[f_class]].append((idx, f_class))
 
-    source_n = int(max([class_counts[j] / source_mix[j] for j in range(n_classes)]))
+    source_n = int(min([class_counts[j] / source_mix[j] for j in range(n_classes)]))
     source_n_by_class = [int(source_mix[j] * source_n) for j in range(n_classes)]
     new_paths = [paths[idx[0]] for j in range(n_classes) for idx in indices[j][:source_n_by_class[j]]]
-    class_assignments = [source_n_by_class[j] for j in range(n_classes) for c in xrange(source_n_by_class[j])]
-    
+    class_assignments = [classes[j] for j in range(n_classes) for c in xrange(source_n_by_class[j])]
+
+    # Print some diagnostics
+    print('Paths contain', [len([1 for path in new_paths if int(path.split('/')[-1][0]) == j]) for j in classes], 'of', classes, 'respectively')
+    print('Class assignments contain', [len([c for c in class_assignments if c == j]) for j in classes], 'of', classes, 'respectively')
+    print('First 10 path/class pairs:', zip([path.split('/')[-1][0] for path in new_paths[:10]], class_assignments[:10]))
+
     filename_queue = tf.train.string_input_producer(list(paths), shuffle=False, seed=seed)
     reader = tf.WholeFileReader()
     filename, data = reader.read(filename_queue)
