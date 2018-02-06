@@ -435,7 +435,7 @@ class Trainer(object):
         self.c_images_reference, self.c_labels_reference = self.prep_01_data(
             split='train', mix='5050', n=8000)
         self.c_images_user, self.c_labels_user = self.prep_01_data(
-            split='classifier', mix='5050', n=100)
+            split='classifier', mix='5050', n=108)
         self.c_images_test, self.c_labels_test = self.prep_01_data(
             split='test', mix='5050', n=1800)
 
@@ -492,10 +492,11 @@ class Trainer(object):
                 })
 
             # Train a bit with mmd5050 (target), then switch to wmmd8020.
-            if step < 0:
+            if step < 10000:
                 weighted = False 
-                x_ = self.get_images_from_loader_target().transpose(
-                    [0, 3, 1, 2])
+                #x_ = self.get_images_from_loader_target().transpose(
+                #    [0, 3, 1, 2])
+                x_ = self.get_images_from_loader().transpose([0, 3, 1, 2])
                 z_ = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
             else:
                 weighted = True 
@@ -527,6 +528,9 @@ class Trainer(object):
                     self.c_images_01: g_mnistcnn,
                     self.dropout_pr: 1.0})
 
+            xp0 = np.mean(np.round(x_pred_pr0_pix))
+            gp0 = np.mean(np.round(g_pred_pr0_pix))
+
             # Run full training step on pre-fetched data and simulations.
             result = self.sess.run(fetch_dict,
                 feed_dict={
@@ -536,8 +540,8 @@ class Trainer(object):
                     self.g_pr0: np.reshape(g_pred_pr0, [-1, 1]),
                     self.x_prop0: np.mean(np.round(x_pred_pr0)),
                     self.g_prop0: np.mean(np.round(g_pred_pr0)),
-                    self.x_prop0_pix: np.mean(np.round(x_pred_pr0_pix)),
-                    self.g_prop0_pix: np.mean(np.round(g_pred_pr0_pix)),
+                    self.x_prop0_pix: xp0,
+                    self.g_prop0_pix: gp0,
                     self.classifier_accuracy_test: test_acc,
                     self.classifier_accuracy_test_pix: test_acc_pix,
                     self.lambda_mmd: self.lambda_mmd_setting, 
@@ -556,6 +560,11 @@ class Trainer(object):
                 print(('[{}/{}] LOSSES: ae_real/fake: {:.6f}, {:.6f} '
                     'mmd: {:.6f}').format(
                         step, self.max_step, ae_loss_real, ae_loss_fake, mmd))
+                with open(os.path.join(self.model_dir, 'xp0s.txt'), 'a') as xp0_file:
+                    xp0_file.write(str(xp0)+'\n')
+                with open(os.path.join(self.model_dir, 'gp0s.txt'), 'a') as gp0_file:
+                    gp0_file.write(str(gp0)+'\n')
+
             if step % (self.save_step) == 0:
                 z = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
                 gen_rand = self.generate(
