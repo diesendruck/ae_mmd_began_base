@@ -24,12 +24,17 @@ gp0s = np.loadtxt(os.path.join(args.log_dir, 'gp0s.txt'))
 log_step = 100
 x_vals = [log_step * i for i in range(len(xp0s))]
 
+def movingaverage(interval, window_size):
+    window = np.ones(int(window_size))/float(window_size)
+    return np.convolve(interval, window, 'same')
 
 plt.figure(figsize=(8, 4))
 plt.title('Proportion class 0, estimated')
-plt.plot(x_vals, xp0s[:20000], color='blue', alpha=0.3, linewidth=2.0, label='x')
-plt.plot(x_vals, gp0s[:20000], color='green', alpha=0.3, linewidth=2.0, label='g')
-plt.axhline(y=0.5, color='gray', linestyle='--')
+plt.plot(x_vals, xp0s, color='blue', alpha=0.3, linestyle=':', linewidth=1.0)
+plt.plot(x_vals, movingaverage(xp0s, 10), color='blue', alpha=1, linestyle=':', linewidth=2.0, label='x')
+plt.plot(x_vals, gp0s, color='green', alpha=0.3, linestyle='-', linewidth=2.0)
+plt.plot(x_vals, movingaverage(gp0s, 10), color='green', alpha=1, linestyle='-', linewidth=2.0, label='g')
+plt.axhline(y=0.5, color='gray', linestyle='-', alpha=0.2)
 plt.xlabel('Iteration')
 plt.ylabel('Prop 0, est.')
 plt.ylim(0, 1)
