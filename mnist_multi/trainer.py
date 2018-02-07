@@ -10,6 +10,7 @@ from tqdm import trange
 from itertools import chain
 from collections import deque
 from PIL import Image
+import json
 
 from models import *
 from utils import save_image
@@ -120,7 +121,7 @@ class Trainer(object):
                                 global_step=self.step,
                                 ready_for_local_init_op=None)
 
-        gpu_options = tf.GPUOptions(allow_growth=True)
+        gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.333)
         sess_config = tf.ConfigProto(allow_soft_placement=True, gpu_options=gpu_options)
 
         self.sess = sv.prepare_or_wait_for_session(config=sess_config)
@@ -432,6 +433,7 @@ class Trainer(object):
         self.c_images_test,      self.c_labels_test      = self.prep_mix_data(split='test',       classes=self.config.data_classes, n= 900 * self.n_classes)
 
         # Train generator.
+        results = [] 
         for step in trange(self.start_step, self.max_step):
             # First do classifier updates.
             batch_user = self.get_n_images_and_labels(self.batch_size, self.c_images_user, self.c_labels_user)
@@ -442,7 +444,6 @@ class Trainer(object):
             self.sess.run(self.c_optim_pix,
                           feed_dict={self.c_images: batch_reference[0], self.c_labels: batch_reference[1],
                                      self.dropout_pr: 0.5})
-
             if step % self.log_step == 0:
                 user_acc, user_acc_pix = self.sess.run([self.classifier_accuracy, self.classifier_accuracy_pix],
                     feed_dict={self.c_images: batch_user[0], self.c_labels: batch_user[1], self.dropout_pr: 1.0})
@@ -450,6 +451,30 @@ class Trainer(object):
                                                        feed_dict={self.c_images: self.c_images_test, 
                                                                   self.c_labels: self.c_labels_test, 
                                                                   self.dropout_pr: 1.0})
+
+                # Pre-fetch data and simulations, and normalize for classification.
+                x_ = self.get_images_from_loader()
+                z_ = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
+                x_mnistcnn, g_mnistcnn = self.sess.run([self.x_normed_for_mnist_prediction,
+                                                        self.g_normed_for_mnist_prediction],
+                                                       feed_dict={self.x: x_, self.z: z_})
+                # Get probs using encodings.
+                xpc = self.sess.run(self.label_pred_pr_c, feed_dict={self.c_images: x_mnistcnn, self.dropout_pr: 1.0})
+                gpc = self.sess.run(self.label_pred_pr_c, feed_dict={self.c_images: g_mnistcnn, self.dropout_pr: 1.0})
+                # Get probs using pixels.
+                xpcp = self.sess.run(self.label_pred_pr_c_pix, feed_dict={self.c_images: x_mnistcnn, self.dropout_pr: 1.0})
+                gpcp = self.sess.run(self.label_pred_pr_c_pix, feed_dict={self.c_images: g_mnistcnn, self.dropout_pr: 1.0})
+
+                # Identify "winning" class in each row, then average to get % in each category
+                xpc = ((xpc.transpose() / xpc.max(1)).transpose() == 1.).mean(0)
+                gpc = ((gpc.transpose() / gpc.max(1)).transpose() == 1.).mean(0)
+                xpcp = ((xpcp.transpose() / xpcp.max(1)).transpose() == 1.).mean(0)
+                gpcp = ((gpcp.transpose() / gpcp.max(1)).transpose() == 1.).mean(0)
+
+                results.append([step, user_acc.item(), user_acc_pix.item(), test_acc.item(), test_acc_pix.item()] + gpc.tolist() + gpcp.tolist() + xpc.tolist() + xpcp.tolist())
+                json.dump(results, open(self.model_dir + '/results.json', 'w'))
+                print('Wrote results.json...')
+
                 print('\nstep {},\nuser/test acc {:.4f}/{:.4f}'
                       '\nuser/test acc_pix {:.4f}/{:.4f}'.format(step, user_acc, test_acc, user_acc_pix, test_acc_pix))
             # Set up basket of items to be run. Occasionally fetch items
