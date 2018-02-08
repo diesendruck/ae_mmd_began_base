@@ -25,7 +25,7 @@ args = parser.parse_args()
 results = np.array(json.load(open('{}/{}'.format(args.log_dir, args.results_file), 'r')))
 kept = results.shape[0] / 2
 
-fig = plt.figure(figsize=(8, 4))
+fig = plt.figure(figsize=(4, 4))
 
 plt.subplot(1,2,1)
 data = results[-kept:, 11:14]

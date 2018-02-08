@@ -579,6 +579,7 @@ class Trainer(object):
         self.config.pct = mix
         cutoffs = np.floor(np.cumsum(mix * n))
         n_by_class = np.array(np.append(cutoffs[:1], cutoffs[1:] - cutoffs[:-1], 0), np.int32)
+        print('Classifier is trained on this count and mixture:', n, n_by_class)
         assert n_by_class.sum() == n, 'Something went wrong in designing the cluster counts, try using a mix and n that are exactly compatible.'
 
 
