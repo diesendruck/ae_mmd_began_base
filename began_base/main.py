@@ -1,3 +1,4 @@
+import os
 import pdb
 import numpy as np
 import tensorflow as tf
@@ -8,6 +9,9 @@ from data_loader import get_loader
 from utils import prepare_dirs_and_logger, save_config
 
 def main(config):
+    # NOTE: Run this in shell first.
+    print('NOTE: FIRST RUN:\n"source ~/began/BEGAN-tensorflow/tf1.1/bin/activate"')
+
     prepare_dirs_and_logger(config)
 
     rng = np.random.RandomState(config.random_seed)
@@ -26,15 +30,15 @@ def main(config):
         batch_size = config.sample_per_image
         do_shuffle = False
 
-    #dir_loader = 'train8020'
+    dir_loader = 'train8020'
     #dir_loader = 'train6040'
     #dir_loader = 'train4060'
     #dir_loader = 'train2080'
     #dir_loader = 'train1090'
     #dir_loader = 'train0510'
     #dir_loader = 'trainBig0510'
-    dir_loader = 'train_all_1090'
-    dir_loader = 'train_small_5050'
+    #dir_loader = 'train_all_1090'
+    #dir_loader = 'train_small_5050'
     config.pct = [int(dir_loader[-4:][:2]), int(dir_loader[-4:][2:])]
 
     dir_target = 'train5050'
