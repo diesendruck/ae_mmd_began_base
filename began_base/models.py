@@ -318,6 +318,50 @@ def bias_variable(shape):
 # END section from Tensorflow website.
 ###############################################################################
 
+def mnist_enc_NN_predict_weights(x, dropout_pr, reuse):
+    """mnist_enc_NN builds the graph for a deep net for classifying digits.
+    Args:
+      x: an input tensor with the dimensions (N_examples, z_dim), where z_dim is the
+      number of encoding dimension.
+      dropout_pr: tf.float32 indicating the keeping rate for dropout.
+    Returns:
+      y_logits: Tensor of shape (N_examples, 2), with values equal to the logits
+        of classifying the digit into zero/nonzero.
+      y_probs: Tensor of shape (N_examples, 2), with values
+        equal to the probabilities of classifying the digit into zero/nonzero.
+    """
+    z_dim = x.get_shape().as_list()[1]
+    with tf.variable_scope('mnist_classifier', reuse=reuse) as vs:
+        x = slim.fully_connected(x, 1024, activation_fn=tf.nn.elu, scope='fc1')
+        x = slim.dropout(x, dropout_pr, scope='drop1')
+        x = slim.fully_connected(x, 1024, activation_fn=tf.nn.elu, scope='fc2')
+        x = slim.dropout(x, dropout_pr, scope='drop2')
+        x = slim.fully_connected(x, 32, activation_fn=tf.nn.elu, scope='fc3')
+        x = slim.dropout(x, dropout_pr, scope='drop3')
+        y = slim.fully_connected(x, 1, activation_fn=None, scope='fc4')
+        #y_probs = tf.nn.softmax(y_logits)
+
+        '''
+        fc_dim = 1024
+        W_fc1 = weight_variable([z_dim, fc_dim])
+        b_fc1 = bias_variable([fc_dim])
+        h_fc1 = tf.nn.relu(tf.matmul(x, W_fc1) + b_fc1)
+        h_fc1_drop = tf.nn.dropout(h_fc1, dropout_pr)
+
+        W_fc2 = weight_variable([fc_dim, fc_dim])
+        b_fc2 = bias_variable([fc_dim])
+        h_fc2 = tf.nn.relu(tf.matmul(h_fc1_drop, W_fc2) + b_fc2)
+        h_fc2_drop = tf.nn.dropout(h_fc2, dropout_pr)
+
+        W_fc3 = weight_variable([fc_dim, 2])
+        b_fc3 = bias_variable([2])
+
+        y_logits = tf.matmul(h_fc2_drop, W_fc3) + b_fc3
+        y_probs = tf.nn.softmax(y_logits)
+        '''
+
+    variables = tf.contrib.framework.get_variables(vs)
+    return y, variables
 
 def mnist_enc_NN(x, dropout_pr, reuse):
     """mnist_enc_NN builds the graph for a deep net for classifying digits.
