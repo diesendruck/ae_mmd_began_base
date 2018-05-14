@@ -176,14 +176,42 @@ class Trainer(object):
             g._finalized = False
 
 
+    # Set up read-only nodes.
+    def build_real_only(self):
+        # Encode.
+        self.to_encode_readonly = tf.placeholder(tf.float32,
+            name='to_encode_readonly',
+            shape=[None, self.scale_size, self.scale_size, self.channel])
+        to_enc = nhwc_to_nchw(convert_255_to_n11(self.to_encode_readonly), is_tf=True)
+        _, self.encoded_readonly, _, _ = AutoencoderCNN(
+            to_enc, self.channel, self.z_dim, self.repeat_num,
+            self.num_conv_filters, self.data_format, reuse=True)
+
+        # Decode.
+        self.to_decode_readonly = tf.placeholder(tf.float32,
+            shape=[None, self.z_dim], name='to_decode_readonly',)
+        self.decoded_readonly, _, _, _ = AutoencoderCNN(
+            to_enc, self.channel, self.z_dim, self.repeat_num,
+            self.num_conv_filters, self.data_format, reuse=True,
+            to_decode=self.to_decode_readonly)
+
+        # Generate.
+        self.z_read = tf.placeholder(tf.float32, shape=[None, self.z_dim],
+            name='z_read',)
+        g_read, _ = GeneratorCNN(
+            self.z_read, self.num_conv_filters, self.channel,
+            self.repeat_num, self.data_format, reuse=True)
+        self.g_read = convert_n11_to_255(g_read, self.data_format, is_tf=True)
+
+
     def build_model(self):
         self.z = tf.random_normal(shape=[self.batch_size, self.z_dim])
-        # Images are NHWC on [0, 1].
+        # Images are NHWC on [0, 255].
         self.x = tf.placeholder(tf.float32,
             [self.batch_size, self.scale_size, self.scale_size, self.channel], name='x')
         self.x_predicted_weights = tf.placeholder(tf.float32, [self.batch_size, 1],
             name='x_predicted_weights')
-        x = nhwc_to_nchw(convert_01_to_n11(self.x), is_tf=True)
+        x = nhwc_to_nchw(convert_255_to_n11(self.x), is_tf=True)
         self.weighted = tf.placeholder(tf.bool, name='weighted')
 
         # Set up generator and autoencoder functions.
@@ -199,12 +227,7 @@ class Trainer(object):
         self.AE_g = convert_n11_to_255(AE_g, self.data_format, is_tf=True)
         self.AE_x = convert_n11_to_255(AE_x, self.data_format, is_tf=True)
 
-        # Set up autoencoder with test input.
-        self.test_input = tf.placeholder(tf.float32, name='test_input',
-            shape=[None, self.channel, self.scale_size, self.scale_size])
-        _, self.test_enc, _, _ = AutoencoderCNN(
-            self.test_input, self.channel, self.z_dim, self.repeat_num,
-            self.num_conv_filters, self.data_format, reuse=True)
+        self.build_real_only()
 
         ## BEGIN: MMD DEFINITON
         on_encodings = 1
@@ -351,13 +374,13 @@ class Trainer(object):
 
         
     def build_weights_prediction(self):
-        # Images are NHWC on [0, 1].
+        # Images are NHWC on [0, 255].
         self.w_images = tf.placeholder(tf.float32,
             [None, self.scale_size, self.scale_size, self.channel], name='w_images')
         self.w_weights = tf.placeholder(tf.float32, [None, 1], name='w_weights')
 
-        # Convert NHWC [0, 1] to NCHW [-1, 1] for autoencoder.
-        w_images_for_ae = convert_01_to_n11(nhwc_to_nchw(self.w_images, is_tf=True))
+        # Convert NHWC [0, 255] to NCHW [-1, 1] for autoencoder.
+        w_images_for_ae = convert_255_to_n11(nhwc_to_nchw(self.w_images, is_tf=True))
         _, w_enc, _, _ = AutoencoderCNN(
             w_images_for_ae, self.channel, self.z_dim, self.repeat_num,
             self.num_conv_filters, self.data_format, reuse=True)
@@ -381,110 +404,31 @@ class Trainer(object):
             self.w_optim = w_opt.apply_gradients(w_capped_gvs) 
 
 
-    def train(self):
-        print('\n{}\n'.format(self.config))
-
-        # Save some fixed images once.
-        z_fixed = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
-        x_fixed = self.get_images_from_loader()
-        save_image(x_fixed, '{}/x_fixed.png'.format(self.model_dir))
-
-        # Use tensorflow tutorial set for conveniently labeled mnist.
-        # NOTE: Data is on [0,1].
-        self.mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
-        self.images_user = self.prep_data(split='user', n=100)  # NHWC
-        self.images_user_weights = np.loadtxt('target_num_user_weights.txt', delimiter=',')
-        self.images_train = self.prep_data(split='train', n=8000)
-
-        # One time, save images in order to apply ratings.
-        user_imgs_dir = os.path.join(self.model_dir, 'user_imgs')
-        if not os.path.exists(user_imgs_dir):
-            os.makedirs(user_imgs_dir)
-        imgs = convert_01_to_255(self.images_user, 'NHWC')
-        save_image(imgs, '{}/user_imgs/user.png'.format(self.model_dir))
-        for i in range(len(self.images_user)):
-            imgs = convert_01_to_255(self.images_user, 'NHWC')
-            im = Image.fromarray(imgs[i][:, :, 0])
-            im = im.convert('RGB')
-            im.save('{}/user_imgs/user_{}.png'.format(self.model_dir, i))
-
-        # Train generator.
-        for step in trange(self.start_step, self.max_step):
-            # First do weighting fn updates.
-            batch_user, batch_user_weights = self.get_n_images_and_weights(
-                self.batch_size, self.images_user, self.images_user_weights)
-            #batch_reference = self.get_n_images_and_weights(
-            #    self.batch_size, self.c_images_reference, self.w_weights_reference)
-
-            self.sess.run(self.w_optim,
-                feed_dict={
-                    self.w_images: batch_user,
-                    self.w_weights: batch_user_weights,
-                    self.dropout_pr: 0.5})
-
-            # Set up basket of items to be run. Occasionally fetch items
-            # useful for logging and saving.
-            fetch_dict = {
-                'd_optim': self.d_optim,
-                'g_optim': self.g_optim,
-            }
-            if step % self.log_step == 0:
-                fetch_dict.update({
-                    'summary': self.summary_op,
-                    'ae_loss_real': self.ae_loss_real,
-                    'ae_loss_fake': self.ae_loss_fake,
-                    'mmd': self.mmd,
-                })
-
-            weighted = True 
-            batch_train = self.get_n_images(self.batch_size, self.images_train)
-            # Now get weights for those in the training batch.
-            batch_train_weights = self.sess.run(self.w_pred,
-                feed_dict={
-                    self.w_images: batch_train,
-                    self.dropout_pr: 1.0})
-
-            # Run full training step on pre-fetched data and simulations.
-            result = self.sess.run(fetch_dict,
-                feed_dict={
-                    self.x: batch_train,
-                    self.x_predicted_weights: batch_train_weights,
-                    self.lambda_mmd: self.lambda_mmd_setting, 
-                    self.lambda_ae: 1.0,
-                    self.dropout_pr: 1.0,
-                    self.weighted: weighted})
-
-            # Log and save as needed.
-            if step % self.log_step == 0:
-                self.summary_writer.add_summary(result['summary'], step)
-                self.summary_writer.flush()
-                ae_loss_real = result['ae_loss_real']
-                ae_loss_fake = result['ae_loss_fake']
-                mmd = result['mmd']
-                print(('[{}/{}] LOSSES: ae_real/fake: {:.6f}, {:.6f} '
-                    'mmd: {:.6f}').format(
-                        step, self.max_step, ae_loss_real, ae_loss_fake, mmd))
-
-            if step % (self.save_step) == 0:
-                z = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
-                gen_rand = self.generate(
-                    z, self.model_dir, idx='rand'+str(step))
-                gen_fixed = self.generate(
-                    z_fixed, self.model_dir, idx='fix'+str(step))
-                if step == 0:
-                    x_samp = self.get_images_from_loader()
-                    save_image(x_samp, '{}/x_samp.png'.format(self.model_dir))
-            if step % self.lr_update_step == self.lr_update_step - 1:
-                self.sess.run([self.g_lr_update, self.d_lr_update])
+    def predict_weights(self, inputs):
+        weights = self.sess.run(self.w_pred,
+            feed_dict={
+                self.w_images: inputs,
+                self.dropout_pr: 1.0})
+        return weights
 
 
-    def generate(self, inputs, root_path=None, path=None, idx=None, save=True):
-        x = self.sess.run(self.g, {self.z: inputs})
-        if path is None and save:
-            path = os.path.join(root_path, 'G_{}.png'.format(idx))
+    def generate(self, inputs, root_path=None, step=None, save=False):
+        x = self.sess.run(self.g_read, {self.z_read: inputs})
+        if save:
+            path = os.path.join(root_path, 'G_{}.png'.format(step))
             save_image(x, path)
             print("[*] Samples saved: {}".format(path))
         return x
+
+
+    def encode(self, inputs):
+        return self.sess.run(self.encoded_readonly, {self.to_encode_readonly: inputs})
+
+
+    def decode(self, inputs):
+        out = self.sess.run(self.decoded_readonly, {self.to_decode_readonly: inputs})
+        out_unnormed = convert_n11_to_255(out)
+        return out_unnormed
 
 
     def get_images_from_loader(self):
@@ -510,15 +454,15 @@ class Trainer(object):
             # Each element of d is a list of [image, one-hot label].
             ind = [i for i,v in enumerate(d) if v[1][target_num] == 1]
             d_target_num = [v for i,v in enumerate(d) if i in ind]
-            # TODO: switch to no permutation, or !=. Will require relabeling target_num_user_weights.txt.
             if split != 'user':
-                d_target_num = np.random.permutation(d_target_num)  # Shuffle for random sampling.
+                d_target_num = np.random.permutation(d_target_num)
             images = [v[0] for v in d_target_num[:n]]
             labels = [v[1] for v in d_target_num[:n]]
 
             # Reshape, rescale, recode.
             images = np.reshape(images,
                 [len(images), self.scale_size, self.scale_size, self.channel])
+            images = convert_01_to_255(images, data_format='NWHC')
             return images
 
         m = self.mnist
@@ -548,3 +492,158 @@ class Trainer(object):
         n_random_indices = np.random.choice(range(len(images)), n, replace=False)
         n_images = [v for i,v in enumerate(images) if i in n_random_indices]
         return np.array(n_images)
+
+
+    def interpolate_z(self, step):
+        # Interpolate z when sampled from noise.
+        z1 = np.random.normal(0, 1, size=(1, self.z_dim))
+        z2 = np.random.normal(0, 1, size=(1, self.z_dim))
+        num_interps = 10
+        proportions = np.linspace(0, 1, num=num_interps)
+        zs = np.zeros(shape=(num_interps, self.z_dim))
+        gens = np.zeros([num_interps, self.scale_size, self.scale_size, self.channel])
+        for i in range(num_interps):
+            zs[i] = proportions[i] * z1 + (1 - proportions[i]) * z2
+            gens[i] = self.generate(np.reshape(zs[i], [1, -1]))
+        save_image(gens, '{}/interpolate_z_noise{}.png'.format(
+            self.model_dir, step))
+
+        # Interpolate between two random encodings.
+        two_random_images = self.get_n_images(2, self.images_train)
+        im1 = two_random_images[:1, :, :, :]  # This notation keeps dims.
+        im2 = two_random_images[1:, :, :, :]
+        z1 = self.encode(im1)
+        z2 = self.encode(im2)
+        num_interps = 10
+        proportions = np.linspace(0, 1, num=num_interps)
+        zs = np.zeros(shape=(num_interps, self.z_dim))
+        gens = np.zeros([num_interps, self.scale_size, self.scale_size, self.channel])
+        for i in range(num_interps):
+            zs[i] = proportions[i] * z1 + (1 - proportions[i]) * z2
+            gens[i] = self.generate(np.reshape(zs[i], [1, -1]))
+        save_image(gens, '{}/interpolate_z_enc{}.png'.format(
+            self.model_dir, step))
+
+
+    def show_sorted_images(self, step):
+        # Get 100 of gen and data, get weights, sort, save.
+        num_to_sort = 100
+        zs = np.random.normal(0, 1, size=(num_to_sort, self.z_dim))
+        gens = self.generate(zs)
+        gens_weights = self.predict_weights(gens)
+        gens_sort_order = np.argsort(gens_weights.flatten())
+        gens_sorted = gens[gens_sort_order]
+
+        data = self.get_n_images(num_to_sort, self.images_train)
+        data_weights = self.predict_weights(data)
+        data_sort_order = np.argsort(data_weights.flatten())
+        data_sorted = data[data_sort_order]
+
+        save_image(gens_sorted, '{}/sorted_gens{}.png'.format(
+            self.model_dir, step))
+        save_image(data_sorted, '{}/sorted_data{}.png'.format(
+            self.model_dir, step))
+
+
+    def train(self):
+        print('\n{}\n'.format(self.config))
+
+        # Save some fixed images once.
+        z_fixed = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
+        x_fixed = self.get_images_from_loader()
+        save_image(x_fixed, '{}/x_fixed.png'.format(self.model_dir))
+
+        # Use tensorflow tutorial set for conveniently labeled mnist.
+        # NOTE: Data originally on [0,1], but immediately converted to [0, 255].
+        num_user_labeled = 200
+        self.mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
+        self.images_user = self.prep_data(split='user', n=num_user_labeled)  # NHWC
+        self.images_user_weights = 1.8 ** np.loadtxt(
+            'target_num_user_weights.txt', delimiter=',')
+        self.images_train = self.prep_data(split='train', n=8000)
+
+        # One time, save images in order to apply ratings.
+        user_imgs_dir = 'user_imgs'
+        if not os.path.exists(user_imgs_dir):
+            os.makedirs(user_imgs_dir)
+        imgs = self.images_user
+        save_image(self.images_user, 'user_imgs/user.png'.format(self.model_dir))
+        for i in range(len(self.images_user)):
+            im = Image.fromarray(imgs[i][:, :, 0])
+            im = im.convert('RGB')
+            im.save('{}/user_{}.png'.format(user_imgs_dir, i))
+
+        # Train generator.
+        for step in trange(self.start_step, self.max_step):
+            # First do weighting fn updates.
+            batch_user, batch_user_weights = self.get_n_images_and_weights(
+                self.batch_size, self.images_user, self.images_user_weights)
+
+            self.sess.run(self.w_optim,
+                feed_dict={
+                    self.w_images: batch_user,
+                    self.w_weights: batch_user_weights,
+                    self.dropout_pr: 0.5})
+
+            # Set up basket of items to be run. Occasionally fetch items
+            # useful for logging and saving.
+            fetch_dict = {
+                'd_optim': self.d_optim,
+                'g_optim': self.g_optim,
+            }
+            if step % self.log_step == 0:
+                fetch_dict.update({
+                    'summary': self.summary_op,
+                    'ae_loss_real': self.ae_loss_real,
+                    'ae_loss_fake': self.ae_loss_fake,
+                    'mmd': self.mmd,
+                })
+
+            weighted = True 
+            batch_train = self.get_n_images(self.batch_size, self.images_train)
+            batch_train_weights = self.predict_weights(batch_train)
+
+            # Run full training step on pre-fetched data and simulations.
+            result = self.sess.run(fetch_dict,
+                feed_dict={
+                    self.x: batch_train,
+                    self.x_predicted_weights: batch_train_weights,
+                    self.lambda_mmd: self.lambda_mmd_setting, 
+                    self.lambda_ae: 1.0,
+                    self.dropout_pr: 1.0,
+                    self.weighted: weighted})
+
+            if step % self.lr_update_step == self.lr_update_step - 1:
+                self.sess.run([self.g_lr_update, self.d_lr_update])
+
+            # Log and save as needed.
+            if step % self.log_step == 0:
+                self.summary_writer.add_summary(result['summary'], step)
+                self.summary_writer.flush()
+                ae_loss_real = result['ae_loss_real']
+                ae_loss_fake = result['ae_loss_fake']
+                mmd = result['mmd']
+                print(('[{}/{}] LOSSES: ae_real/fake: {:.6f}, {:.6f} '
+                    'mmd: {:.6f}').format(
+                        step, self.max_step, ae_loss_real, ae_loss_fake, mmd))
+
+            if step % (self.save_step) == 0:
+                # First save a sample.
+                if step == 0:
+                    x_samp = self.get_n_images(1, self.images_train)
+                    save_image(x_samp, '{}/x_samp.png'.format(self.model_dir))
+
+                # Save images for fixed and random z.
+                gen_fixed = self.generate(
+                    z_fixed, root_path=self.model_dir, step='fix'+str(step),
+                    save=True)
+                z = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
+                gen_rand = self.generate(
+                    z, root_path=self.model_dir, step='rand'+str(step), save=True)
+
+                # Save image of interpolation of z.
+                self.interpolate_z(step)
+
+                # Save image of 100 generated and 100 data, with increasing weight.
+                self.show_sorted_images(step)
+

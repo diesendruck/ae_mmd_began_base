@@ -32,7 +32,7 @@ def GeneratorCNN(z, num_filters, channels_out, repeat_num, data_format, reuse):
 
 
 def AutoencoderCNN(x, input_channel, z_num, repeat_num, num_filters,
-        data_format, reuse):
+        data_format, reuse, to_decode=None):
     # NOTE: Changed reshape to 7x7 for 28x28 mnist.
     with tf.variable_scope("ae_enc", reuse=reuse) as vs_enc:
         # Encoder
@@ -53,6 +53,8 @@ def AutoencoderCNN(x, input_channel, z_num, repeat_num, num_filters,
 
         x = tf.reshape(x, [-1, np.prod([7, 7, channel_num])])
         z = x = slim.fully_connected(x, z_num, activation_fn=None)
+        if to_decode is not None:
+            x = to_decode
 
     with tf.variable_scope("ae_dec", reuse=reuse) as vs_dec:
         # Decoder
