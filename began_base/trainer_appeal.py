@@ -5,6 +5,9 @@ import pdb
 import StringIO
 import scipy.misc
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 from glob import glob
 from tqdm import trange
 from itertools import chain
@@ -446,6 +449,7 @@ class Trainer(object):
 
 
     def prep_data(self, split='user', n=100):
+        # NOTE: This must correspond to the target_num_user_weights.txt file.
         target_num = 7
         print('\n\nFetching only number {}.\n\n'.format(target_num))
 
@@ -540,9 +544,23 @@ class Trainer(object):
         data_sorted = data[data_sort_order]
 
         save_image(gens_sorted, '{}/sorted_gens{}.png'.format(
-            self.model_dir, step))
+            self.model_dir, step), nrow=10)
         save_image(data_sorted, '{}/sorted_data{}.png'.format(
-            self.model_dir, step))
+            self.model_dir, step), nrow=10)
+
+        # Add line graph to show change of distribution.
+        plt.figure(figsize=(5, 5))
+        plt.plot(np.sort(data_weights.flatten()), color='blue', marker='.',
+            label='data')
+        plt.plot(np.sort(gens_weights.flatten()), color='green', marker='2',
+            label='gens')
+        plt.xlabel('Ordered sample')
+        plt.ylabel('Predicted weight, 1/M(x)')
+        plt.legend()
+        plt.subplots_adjust(bottom=.25, left=.25)
+        plt.savefig('{}/sorted_lines{}.png'.format(self.model_dir, step))
+        plt.legend()
+        plt.close()
 
 
     def train(self):
@@ -572,6 +590,7 @@ class Trainer(object):
             im = Image.fromarray(imgs[i][:, :, 0])
             im = im.convert('RGB')
             im.save('{}/user_{}.png'.format(user_imgs_dir, i))
+        pdb.set_trace()
 
         # Train generator.
         for step in trange(self.start_step, self.max_step):
@@ -639,11 +658,12 @@ class Trainer(object):
                     save=True)
                 z = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
                 gen_rand = self.generate(
-                    z, root_path=self.model_dir, step='rand'+str(step), save=True)
+                    z, root_path=self.model_dir, step='rand'+str(step),
+                    save=True)
 
                 # Save image of interpolation of z.
                 self.interpolate_z(step)
 
-                # Save image of 100 generated and 100 data, with increasing weight.
+                # Save 100 generated and 100 data, with increasing weight.
                 self.show_sorted_images(step)
 

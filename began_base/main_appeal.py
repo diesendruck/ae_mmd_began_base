@@ -1,6 +1,7 @@
+import numpy as np
 import os
 import pdb
-import numpy as np
+import sys
 import tensorflow as tf
 
 from trainer_appeal import Trainer
@@ -12,6 +13,13 @@ def main(config):
     # NOTE: Run this in shell first.
     if tf.__version__[:3] != '1.1':
         sys.exit('NOTE: FIRST RUN:\n"source ~/began/BEGAN-tensorflow/tf1.1/bin/activate"')
+    # NOTE: Other setup requirements.
+    print('REQUIREMENTS:\n  1. The file "target_num_user_weights.txt" should '
+        'contain the user-provided labels for the desired target number.\n  ',
+        '2. In trainer_appeal.py, "target_num" must be set, and match the ',
+        'class of the user-provided labels.\n  3. In trainer_appeal.py, ',
+        '"num_user_labeled" must correspond to the number of labels in ',
+        '"target_num_user_weights.txt".')
 
     prepare_dirs_and_logger(config)
 
